@@ -83,6 +83,60 @@ pub const AurClient = struct {
             return error.GitCloneFailed;
         }
     }
+
+    pub fn downloadFromGitHub(self: *AurClient, repo_spec: []const u8, dest_dir: []const u8) !void {
+        // Parse "user/repo" or "user/repo@branch" or "user/repo/path"
+        var parts = std.mem.splitScalar(u8, repo_spec, '/');
+        const user = parts.next() orelse return error.InvalidRepoSpec;
+        var repo_and_branch = parts.next() orelse return error.InvalidRepoSpec;
+        const subpath = parts.rest();
+
+        // Check for branch specification
+        var branch: []const u8 = "main";
+        var repo = repo_and_branch;
+        if (std.mem.indexOf(u8, repo_and_branch, "@")) |at_pos| {
+            repo = repo_and_branch[0..at_pos];
+            branch = repo_and_branch[at_pos + 1 ..];
+        }
+
+        const git_url = try std.fmt.allocPrint(self.allocator, "https://github.com/{s}/{s}.git", .{ user, repo });
+        defer self.allocator.free(git_url);
+
+        const dest_path = try std.fs.path.join(self.allocator, &.{ dest_dir, repo });
+        defer self.allocator.free(dest_path);
+
+        // Clone repository
+        var child = std.process.Child.init(&.{ "git", "clone", "-b", branch, git_url, dest_path }, self.allocator);
+        const result = try child.spawnAndWait();
+
+        if (result != .Exited or result.Exited != 0) {
+            return error.GitCloneFailed;
+        }
+
+        // If subpath specified, move PKGBUILD to root
+        if (subpath.len > 0) {
+            const pkgbuild_src = try std.fs.path.join(self.allocator, &.{ dest_path, subpath, "PKGBUILD" });
+            defer self.allocator.free(pkgbuild_src);
+
+            const pkgbuild_dst = try std.fs.path.join(self.allocator, &.{ dest_path, "PKGBUILD" });
+            defer self.allocator.free(pkgbuild_dst);
+
+            std.fs.copyFileAbsolute(pkgbuild_src, pkgbuild_dst, .{}) catch |err| {
+                std.debug.print("Warning: Could not find PKGBUILD at {s}: {}\n", .{ pkgbuild_src, err });
+            };
+        }
+
+        std.debug.print("✓ Downloaded GitHub repository: {s}\n", .{repo_spec});
+    }
+
+    pub fn checkForUpdates(self: *AurClient, package_name: []const u8) !?[]const u8 {
+        const aur_package = try self.searchPackage(package_name);
+        if (aur_package) |pkg| {
+            defer pkg.deinit(self.allocator);
+            return try self.allocator.dupe(u8, pkg.version);
+        }
+        return null;
+    }
 };
 
 pub const AurPackage = struct {

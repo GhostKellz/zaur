@@ -10,7 +10,7 @@ pub const Database = struct {
         // Convert path to null-terminated string
         const path_z = try allocator.dupeZ(u8, path);
         defer allocator.free(path_z);
-        
+
         const db = try sqlite.Db.init(.{
             .mode = sqlite.Db.Mode{ .File = path_z },
             .open_flags = .{
@@ -25,7 +25,7 @@ pub const Database = struct {
             .allocator = allocator,
             .path = try allocator.dupe(u8, path),
         };
-        
+
         try self.initSchema();
         return self;
     }
@@ -73,7 +73,7 @@ pub const Database = struct {
             \\VALUES (?, ?, ?, CURRENT_TIMESTAMP)
         );
         defer stmt.deinit();
-        
+
         try stmt.exec(.{}, .{ .name = name, .source_type = source_type, .source_url = source_url });
         std.debug.print("✓ Added package to database: {s}\n", .{name});
     }
@@ -94,16 +94,27 @@ pub const Database = struct {
             \\WHERE name = ?
         );
         defer stmt.deinit();
-        
+
         try stmt.exec(.{}, .{ .build_status = status, .name = name });
         std.debug.print("✓ Updated build status for {s}: {s}\n", .{ name, status });
+    }
+
+    pub fn updatePackageVersion(self: *Database, name: []const u8, version: []const u8) !void {
+        var stmt = try self.db.prepare(
+            \\UPDATE packages SET version = ?, updated_at = CURRENT_TIMESTAMP 
+            \\WHERE name = ?
+        );
+        defer stmt.deinit();
+
+        try stmt.exec(.{}, .{ .version = version, .name = name });
+        std.debug.print("✓ Updated version for {s}: {s}\n", .{ name, version });
     }
 
     pub fn addBuildLog(self: *Database, package_name: []const u8, log_content: []const u8, success: bool) !void {
         // First get the package ID
         var stmt = try self.db.prepare("SELECT id FROM packages WHERE name = ?");
         defer stmt.deinit();
-        
+
         const maybe_package_id = try stmt.one(struct { id: i64 }, .{}, .{ .name = package_name });
         if (maybe_package_id) |row| {
             var log_stmt = try self.db.prepare(
@@ -111,12 +122,8 @@ pub const Database = struct {
                 \\VALUES (?, ?, ?)
             );
             defer log_stmt.deinit();
-            
-            try log_stmt.exec(.{}, .{ 
-                .package_id = row.id, 
-                .log_content = log_content, 
-                .success = success 
-            });
+
+            try log_stmt.exec(.{}, .{ .package_id = row.id, .log_content = log_content, .success = success });
             std.debug.print("✓ Added build log for {s}\n", .{package_name});
         } else {
             std.debug.print("✗ Package not found for build log: {s}\n", .{package_name});

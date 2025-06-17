@@ -10,6 +10,8 @@ const Command = enum {
     list,
     clean,
     status,
+    update,
+    @"gpg-init",
     help,
 };
 
@@ -41,6 +43,8 @@ pub fn main() !void {
         .list => try handleList(allocator),
         .clean => try handleClean(allocator, args[2..]),
         .status => try handleStatus(allocator),
+        .update => try handleUpdate(allocator, args[2..]),
+        .@"gpg-init" => try handleGpgInit(allocator, args[2..]),
         .help => try printHelp(),
     }
 }
@@ -102,9 +106,14 @@ fn handleAdd(allocator: std.mem.Allocator, args: []const []const u8) !void {
         }
     } else if (std.mem.startsWith(u8, package_spec, "github:")) {
         const github_spec = package_spec[7..];
+
+        var aur_client = zaur.AurClient.init(allocator);
+        defer aur_client.deinit();
+
+        try aur_client.downloadFromGitHub(github_spec, config.build_dir);
         try db.addPackage(github_spec, "github", package_spec);
+
         std.debug.print("✓ Added GitHub package: {s}\n", .{github_spec});
-        std.debug.print("Note: GitHub package support is planned for future versions\n", .{});
     } else {
         std.debug.print("✗ Unsupported package format: {s}\n", .{package_spec});
         std.debug.print("Supported formats: aur/package-name, github:user/repo\n", .{});
@@ -348,6 +357,105 @@ fn handleStatus(allocator: std.mem.Allocator) !void {
     std.debug.print("  📦 {d} package files ready\n", .{pkg_count});
 }
 
+fn handleUpdate(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+
+    var db = try zaur.Database.init(allocator, config.db_path);
+    defer db.deinit();
+
+    const target = if (args.len > 0) args[0] else "all";
+    std.debug.print("🔄 Checking for updates: {s}\n", .{target});
+
+    var aur_client = zaur.AurClient.init(allocator);
+    defer aur_client.deinit();
+
+    const packages = try db.getPackages(allocator);
+    defer {
+        for (packages) |pkg| {
+            pkg.deinit(allocator);
+        }
+        allocator.free(packages);
+    }
+
+    var updated_count: u32 = 0;
+    var rebuild_needed = false;
+
+    for (packages) |pkg| {
+        if (!std.mem.eql(u8, target, "all") and !std.mem.eql(u8, target, pkg.name)) {
+            continue;
+        }
+
+        if (std.mem.eql(u8, pkg.source_type, "aur")) {
+            const latest_version = try aur_client.checkForUpdates(pkg.name);
+            if (latest_version) |new_version| {
+                defer allocator.free(new_version);
+
+                if (!std.mem.eql(u8, pkg.version, new_version)) {
+                    std.debug.print("🆕 Update available: {s} {s} → {s}\n", .{ pkg.name, pkg.version, new_version });
+
+                    // Download updated PKGBUILD
+                    try aur_client.downloadPkgbuild(pkg.name, config.build_dir);
+
+                    // Update database with new version
+                    try db.updatePackageVersion(pkg.name, new_version);
+                    updated_count += 1;
+                    rebuild_needed = true;
+                } else {
+                    std.debug.print("✅ Up to date: {s} ({s})\n", .{ pkg.name, pkg.version });
+                }
+            }
+        } else if (std.mem.eql(u8, pkg.source_type, "github")) {
+            // For GitHub packages, we could check releases or commits
+            std.debug.print("⚠️  GitHub update checking not yet implemented: {s}\n", .{pkg.name});
+        }
+    }
+
+    if (rebuild_needed) {
+        std.debug.print("\n🔨 Rebuilding updated packages...\n", .{});
+        var builder = zaur.PackageBuilder.init(allocator, config.build_dir, config.repo_dir);
+
+        for (packages) |pkg| {
+            if (!std.mem.eql(u8, target, "all") and !std.mem.eql(u8, target, pkg.name)) {
+                continue;
+            }
+
+            const result = try builder.buildPackage(pkg.name);
+            defer result.deinit(allocator);
+
+            if (result.success) {
+                try db.updatePackageBuildStatus(pkg.name, "success");
+                std.debug.print("✅ Rebuilt {s} successfully\n", .{pkg.name});
+            } else {
+                try db.updatePackageBuildStatus(pkg.name, "failed");
+                std.debug.print("❌ Failed to rebuild {s}\n", .{pkg.name});
+            }
+        }
+
+        // Regenerate repository database
+        var repo_manager = zaur.RepoManager.init(allocator, config.repo_dir, config.db_name);
+        try repo_manager.generateRepoDatabase();
+    }
+
+    std.debug.print("\n📊 Update Summary: {d} packages updated\n", .{updated_count});
+}
+
+fn handleGpgInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 2) {
+        std.debug.print("Error: Name and email required\n", .{});
+        std.debug.print("Usage: zaur gpg-init <name> <email>\n", .{});
+        std.debug.print("Example: zaur gpg-init \"GhostCTL AUR\" \"aur@ghostctl.com\"\n", .{});
+        return;
+    }
+
+    var gpg_signer = zaur.GpgSigner.init(allocator);
+    try gpg_signer.initializeGpgKey(args[0], args[1]);
+
+    std.debug.print("\n🔐 GPG Setup Complete!\n", .{});
+    std.debug.print("💡 Set environment variable: export ZAUR_GPG_KEY=\"{s}\"\n", .{args[1]});
+    std.debug.print("💡 Add to your shell profile for persistence\n", .{});
+}
+
 fn printHelp() !void {
     const help_text =
         \\ZAUR: Zig Arch User Repository
@@ -364,13 +472,19 @@ fn printHelp() !void {
         \\    list                List packages and repository status
         \\    clean [versions]    Clean old builds (default: keep 3)
         \\    status              Show system health and statistics
+        \\    update [target]     Check for updates and rebuild (default: all)
+        \\    gpg-init <name> <email>  Initialize GPG key for package signing
         \\    help                Show this help
         \\
         \\EXAMPLES:
         \\    zaur init
+        \\    zaur gpg-init "GhostCTL AUR" "aur@ghostctl.com"
         \\    zaur add aur/firefox
         \\    zaur add github:ghostkellz/nvcontrol
+        \\    zaur add github:user/repo@main/subdir
         \\    zaur build all
+        \\    zaur update firefox
+        \\    zaur update all
         \\    zaur list
         \\    zaur clean 5
         \\    zaur status
