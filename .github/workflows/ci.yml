@@ -25,6 +25,11 @@ jobs:
           ZIG_DIR=$(tar -tf "$TARBALL" | head -1 | cut -f1 -d"/")
           echo "$PWD/$ZIG_DIR" >> $GITHUB_PATH
 
+      - name: Install SQLite
+        run: |
+          sudo apt-get update  
+          sudo apt-get install -y libsqlite3-dev
+
       - name: Build with Zig
         run: zig build
 
