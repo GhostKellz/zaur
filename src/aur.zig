@@ -23,7 +23,7 @@ pub const AurClient = struct {
 
         // Use a simple buffer for headers
         var header_buffer: [4096]u8 = undefined;
-        
+
         var req = try self.http_client.open(.GET, uri, .{
             .server_header_buffer = &header_buffer,
         });

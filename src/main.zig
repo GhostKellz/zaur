@@ -7,6 +7,9 @@ const Command = enum {
     build,
     serve,
     sync,
+    list,
+    clean,
+    status,
     help,
 };
 
@@ -35,6 +38,9 @@ pub fn main() !void {
         .build => try handleBuild(allocator, args[2..]),
         .serve => try handleServe(allocator, args[2..]),
         .sync => try handleSync(allocator, args[2..]),
+        .list => try handleList(allocator),
+        .clean => try handleClean(allocator, args[2..]),
+        .status => try handleStatus(allocator),
         .help => try printHelp(),
     }
 }
@@ -187,6 +193,161 @@ fn handleSync(allocator: std.mem.Allocator, args: []const []const u8) !void {
     std.debug.print("Note: Sync functionality is planned for future versions\n", .{});
 }
 
+fn handleList(allocator: std.mem.Allocator) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+
+    var db = try zaur.Database.init(allocator, config.db_path);
+    defer db.deinit();
+
+    std.debug.print("📦 ZAUR Repository Status\n", .{});
+    std.debug.print("Repository: {s}\n", .{config.repo_dir});
+    std.debug.print("\n🗄️ Database Packages:\n", .{});
+
+    const packages = try db.getPackages(allocator);
+    defer {
+        for (packages) |pkg| {
+            pkg.deinit(allocator);
+        }
+        allocator.free(packages);
+    }
+
+    if (packages.len == 0) {
+        std.debug.print("  No packages in database\n", .{});
+    } else {
+        for (packages) |pkg| {
+            const status_icon = if (std.mem.eql(u8, pkg.build_status, "success")) "✅" else if (std.mem.eql(u8, pkg.build_status, "failed")) "❌" else "⏳";
+            std.debug.print("  {s} {s} ({s}) - {s}\n", .{ status_icon, pkg.name, pkg.version, pkg.build_status });
+        }
+    }
+
+    // Show built packages in repository
+    std.debug.print("\n📦 Built Packages:\n", .{});
+    var repo_manager = zaur.RepoManager.init(allocator, config.repo_dir, config.db_name);
+    try repo_manager.listPackages();
+}
+
+fn handleClean(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+
+    const keep_versions: u32 = if (args.len > 0)
+        try std.fmt.parseInt(u32, args[0], 10)
+    else
+        3;
+
+    std.debug.print("🧹 Cleaning old packages (keeping {d} versions)...\n", .{keep_versions});
+
+    // Clean build directory
+    var build_dir = std.fs.openDirAbsolute(config.build_dir, .{ .iterate = true }) catch {
+        std.debug.print("Build directory not found\n", .{});
+        return;
+    };
+    defer build_dir.close();
+
+    var build_iter = build_dir.iterate();
+    var cleaned_count: u32 = 0;
+    while (try build_iter.next()) |entry| {
+        if (entry.kind == .directory) {
+            const full_path = try std.fs.path.join(allocator, &.{ config.build_dir, entry.name });
+            defer allocator.free(full_path);
+
+            std.fs.deleteTreeAbsolute(full_path) catch |err| {
+                std.debug.print("Warning: Could not clean {s}: {}\n", .{ entry.name, err });
+                continue;
+            };
+            cleaned_count += 1;
+            std.debug.print("  Removed build dir: {s}\n", .{entry.name});
+        }
+    }
+
+    var repo_manager = zaur.RepoManager.init(allocator, config.repo_dir, config.db_name);
+    try repo_manager.cleanOldPackages(keep_versions);
+
+    std.debug.print("✅ Cleaned {d} build directories\n", .{cleaned_count});
+}
+
+fn handleStatus(allocator: std.mem.Allocator) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+
+    std.debug.print("📊 ZAUR System Status\n", .{});
+    std.debug.print("━━━━━━━━━━━━━━━━━━━━━━\n", .{});
+
+    // Check directories
+    std.debug.print("📁 Directories:\n", .{});
+    const dirs = [_][]const u8{ config.repo_dir, config.build_dir };
+    for (dirs) |dir| {
+        std.fs.accessAbsolute(dir, .{}) catch {
+            std.debug.print("  ❌ {s} (missing)\n", .{dir});
+            continue;
+        };
+        std.debug.print("  ✅ {s}\n", .{dir});
+    }
+
+    // Check database
+    std.debug.print("\n🗄️ Database:\n", .{});
+    var db = zaur.Database.init(allocator, config.db_path) catch {
+        std.debug.print("  ❌ Database connection failed\n", .{});
+        return;
+    };
+    defer db.deinit();
+
+    const packages = try db.getPackages(allocator);
+    defer {
+        for (packages) |pkg| {
+            pkg.deinit(allocator);
+        }
+        allocator.free(packages);
+    }
+
+    std.debug.print("  ✅ Connected to {s}\n", .{config.db_path});
+    std.debug.print("  📦 {d} packages tracked\n", .{packages.len});
+
+    // Count by status
+    var pending: u32 = 0;
+    var success: u32 = 0;
+    var failed: u32 = 0;
+    for (packages) |pkg| {
+        if (std.mem.eql(u8, pkg.build_status, "success")) {
+            success += 1;
+        } else if (std.mem.eql(u8, pkg.build_status, "failed")) {
+            failed += 1;
+        } else {
+            pending += 1;
+        }
+    }
+
+    std.debug.print("     ✅ {d} successful builds\n", .{success});
+    std.debug.print("     ❌ {d} failed builds\n", .{failed});
+    std.debug.print("     ⏳ {d} pending builds\n", .{pending});
+
+    // Check repository files
+    std.debug.print("\n📦 Repository:\n", .{});
+    const db_file = try std.fmt.allocPrint(allocator, "{s}/{s}.db.tar.zst", .{ config.repo_dir, config.db_name });
+    defer allocator.free(db_file);
+
+    std.fs.accessAbsolute(db_file, .{}) catch {
+        std.debug.print("  ❌ Repository database not generated\n", .{});
+        std.debug.print("  💡 Run 'zaur build all' to generate\n", .{});
+        return;
+    };
+    std.debug.print("  ✅ Repository database exists\n", .{});
+
+    // Count package files
+    var repo_dir = std.fs.openDirAbsolute(config.repo_dir, .{ .iterate = true }) catch return;
+    defer repo_dir.close();
+
+    var pkg_count: u32 = 0;
+    var repo_iter = repo_dir.iterate();
+    while (try repo_iter.next()) |entry| {
+        if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".pkg.tar.zst")) {
+            pkg_count += 1;
+        }
+    }
+    std.debug.print("  📦 {d} package files ready\n", .{pkg_count});
+}
+
 fn printHelp() !void {
     const help_text =
         \\ZAUR: Zig Arch User Repository
@@ -200,6 +361,9 @@ fn printHelp() !void {
         \\    build [target]      Build packages (default: all)
         \\    serve [options]     Start HTTP server
         \\    sync <repo-url>     Sync from remote repository
+        \\    list                List packages and repository status
+        \\    clean [versions]    Clean old builds (default: keep 3)
+        \\    status              Show system health and statistics
         \\    help                Show this help
         \\
         \\EXAMPLES:
@@ -207,6 +371,9 @@ fn printHelp() !void {
         \\    zaur add aur/firefox
         \\    zaur add github:ghostkellz/nvcontrol
         \\    zaur build all
+        \\    zaur list
+        \\    zaur clean 5
+        \\    zaur status
         \\    zaur serve --port 8080 --bind 0.0.0.0
         \\
         \\OPTIONS (serve):
