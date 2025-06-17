@@ -1,4 +1,4 @@
-# ZAUR: Zig Arch User Repository
+# ZAUR:[![CI](https://github.com/ghostkellz/zaur/workflows/CI/badge.svg)](https://github.com/ghostkellz/zaur/actions/workflows/ci.yml)Zig Arch User Repository
 
 > **ZAUR** is a lightweight, Zig-native self-hosted AUR system for building and hosting Arch packages. This is currently a **scaffolding version** with the core structure implemented and ready for feature development.
 
