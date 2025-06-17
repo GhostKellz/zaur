@@ -5,7 +5,7 @@
 ![Arch Linux](https://img.shields.io/badge/arch%20linux-supported-blue?logo=arch-linux&logoColor=white)
 [![AUR](https://img.shields.io/badge/AUR-planned-orange?logo=arch-linux)](#)
 ![Zig v0.15](https://img.shields.io/badge/Zig-v0.15-yellow?logo=zig)
-![Status](https://img.shields.io/badge/status-production--ready-green)
+[![Status](https://github.com/ghostkellz/zaur/actions/workflows/ci.yml/badge.svg)](https://github.com/ghostkellz/zaur/actions/workflows/ci.yml)
 
 ---
 

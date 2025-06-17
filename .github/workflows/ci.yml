@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Zig (latest dev)
+        run: |
+          set -eux
+          JSON=$(curl -sL https://ziglang.org/download/index.json)
+          ZIG_URL=$(echo "$JSON" | jq -r '.master."x86_64-linux".tarball')
+          curl -LO "$ZIG_URL"
+          TARBALL=$(basename "$ZIG_URL")
+          tar -xf "$TARBALL"
+          ZIG_DIR=$(tar -tf "$TARBALL" | head -1 | cut -f1 -d"/")
+          echo "$PWD/$ZIG_DIR" >> $GITHUB_PATH
+
+      - name: Build with Zig
+        run: zig build
+
+      - name: Run Zig tests
+        run: zig build test
