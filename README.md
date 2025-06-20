@@ -3,7 +3,7 @@
 > **ZAUR** is a lightweight, Zig-native self-hosted AUR system for building and hosting Arch packages. This is currently a **scaffolding version** with the core structure implemented and ready for feature development.
 
 ![Arch Linux](https://img.shields.io/badge/arch%20linux-supported-blue?logo=arch-linux&logoColor=white)
-[![AUR](https://img.shields.io/badge/AUR-planned-orange?logo=arch-linux)](#)
+[![AUR](https://img.shields.io/badge/AUR-planned-yellow?logo=arch-linux)](#)
 ![Zig v0.15](https://img.shields.io/badge/Zig-v0.15-yellow?logo=zig)
 [![Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](https://github.com/ghostkellz/zaur)
 
