@@ -1,0 +1,45 @@
+# Git files
+.git
+.gitignore
+.gitattributes
+
+# Build artifacts
+zig-cache/
+zig-out/
+.zig-cache/
+
+# Development files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Documentation (already copied)
+*.md
+!README.md
+!LICENSE
+
+# CI/CD files
+.github/
+.gitlab-ci.yml
+
+# Docker files (don't copy into container)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Data directories
+data/
+zaur-data/
+*.db
+*.db-*
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
