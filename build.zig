@@ -22,8 +22,13 @@ pub fn build(b: *std.Build) void {
     // target and optimize options) will be listed when running `zig build --help`
     // in this directory.
 
-    // Get SQLite dependency
-    const sqlite = b.dependency("sqlite", .{
+    // Get dependencies
+    const zsync = b.dependency("zsync", .{
+        .target = target,
+        .optimize = optimize,
+    });
+    
+    const zqlite = b.dependency("zqlite", .{
         .target = target,
         .optimize = optimize,
     });
@@ -47,7 +52,8 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
         .imports = &.{
-            .{ .name = "sqlite", .module = sqlite.module("sqlite") },
+            .{ .name = "zsync", .module = zsync.module("zsync") },
+            .{ .name = "zqlite", .module = zqlite.module("zqlite") },
         },
     });
 
@@ -93,9 +99,8 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // Link SQLite
-    exe.linkLibC();
-    exe.linkSystemLibrary("sqlite3");
+    // No external linking needed - using pure Zig dependencies
+    // exe.linkLibC();  // Only if needed for other C libraries
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

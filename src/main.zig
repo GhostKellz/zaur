@@ -7,11 +7,14 @@ const Command = enum {
     build,
     serve,
     sync,
+    smart_sync,
+    auto_update,
     list,
     clean,
     status,
     update,
     @"gpg-init",
+    generate,
     help,
 };
 
@@ -39,14 +42,66 @@ pub fn main() !void {
         .add => try handleAdd(allocator, args[2..]),
         .build => try handleBuild(allocator, args[2..]),
         .serve => try handleServe(allocator, args[2..]),
-        .sync => try handleSync(allocator, args[2..]),
+        .sync => try handleMirrorSync(allocator, args[2..]),
+        .smart_sync => try handleMirrorSmartSync(allocator),
+        .auto_update => try handleMirrorAutoUpdate(allocator),
         .list => try handleList(allocator),
         .clean => try handleClean(allocator, args[2..]),
         .status => try handleStatus(allocator),
         .update => try handleUpdate(allocator, args[2..]),
         .@"gpg-init" => try handleGpgInit(allocator, args[2..]),
+        .generate => try handleGenerate(allocator, args[2..]),
         .help => try printHelp(),
     }
+}
+
+fn printHelp() !void {
+    const help_text =
+        \\🦎 ZAUR - Zig Arch User Repository
+        \\
+        \\USAGE:
+        \\    zaur <COMMAND> [OPTIONS]
+        \\
+        \\COMMANDS:
+        \\    init                Initialize ZAUR repository
+        \\    add <package>       Add package from AUR or GitHub
+        \\    build [target]      Build packages (default: all)
+        \\    serve [options]     Start HTTP server
+        \\    sync [repo]         Sync Arch repo(s) to local mirror
+        \\    smart-sync          Cache only installed packages from official repos
+        \\    auto-update         Auto-update mirror and AUR packages
+        \\    list                List packages and repository status
+        \\    clean [versions]    Clean old builds (default: keep 3)
+        \\    status              Show system health and statistics
+        \\    update [target]     Check for updates and rebuild (default: all)
+        \\    generate <dir>      Generate PKGBUILD for Zig/C projects 🦎
+        \\    gpg-init <n> <email>  Initialize GPG key for package signing
+        \\    help                Show this help
+        \\
+        \\EXAMPLES:
+        \\    zaur init
+        \\    zaur gpg-init "GhostCTL AUR" "aur@ghostctl.com"
+        \\    zaur add aur/firefox
+        \\    zaur add github:ghostkellz/nvcontrol
+        \\    zaur add github:user/repo@main/subdir
+        \\    zaur generate ./my-zig-project
+        \\    zaur build all
+        \\    zaur update firefox
+        \\    zaur update all
+        \\    zaur list
+        \\    zaur clean 5
+        \\    zaur status
+        \\    zaur serve --port 8080 --bind 0.0.0.0
+        \\    zaur sync core extra multilib
+        \\    zaur smart-sync
+        \\    zaur auto-update
+        \\
+        \\OPTIONS (serve):
+        \\    --port <port>       Port to bind to (default: 8080)
+        \\    --bind <address>    Address to bind to (default: 127.0.0.1)
+        \\
+    ;
+    std.debug.print("{s}", .{help_text});
 }
 
 fn handleInit(allocator: std.mem.Allocator) !void {
@@ -189,17 +244,6 @@ fn handleServe(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
     var server = zaur.HttpServer.init(allocator, config.repo_dir, config.port, config.bind_address);
     try server.start();
-}
-
-fn handleSync(allocator: std.mem.Allocator, args: []const []const u8) !void {
-    _ = allocator;
-    if (args.len == 0) {
-        std.debug.print("Error: Repository URL required\n", .{});
-        std.debug.print("Usage: zaur sync <repo-url>\n", .{});
-        return;
-    }
-    std.debug.print("Syncing from: {s}\n", .{args[0]});
-    std.debug.print("Note: Sync functionality is planned for future versions\n", .{});
 }
 
 fn handleList(allocator: std.mem.Allocator) !void {
@@ -456,44 +500,93 @@ fn handleGpgInit(allocator: std.mem.Allocator, args: []const []const u8) !void {
     std.debug.print("💡 Add to your shell profile for persistence\n", .{});
 }
 
-fn printHelp() !void {
-    const help_text =
-        \\ZAUR: Zig Arch User Repository
-        \\
-        \\USAGE:
-        \\    zaur <COMMAND> [OPTIONS]
-        \\
-        \\COMMANDS:
-        \\    init                Initialize ZAUR repository
-        \\    add <package>       Add package from AUR or GitHub
-        \\    build [target]      Build packages (default: all)
-        \\    serve [options]     Start HTTP server
-        \\    sync <repo-url>     Sync from remote repository
-        \\    list                List packages and repository status
-        \\    clean [versions]    Clean old builds (default: keep 3)
-        \\    status              Show system health and statistics
-        \\    update [target]     Check for updates and rebuild (default: all)
-        \\    gpg-init <name> <email>  Initialize GPG key for package signing
-        \\    help                Show this help
-        \\
-        \\EXAMPLES:
-        \\    zaur init
-        \\    zaur gpg-init "GhostCTL AUR" "aur@ghostctl.com"
-        \\    zaur add aur/firefox
-        \\    zaur add github:ghostkellz/nvcontrol
-        \\    zaur add github:user/repo@main/subdir
-        \\    zaur build all
-        \\    zaur update firefox
-        \\    zaur update all
-        \\    zaur list
-        \\    zaur clean 5
-        \\    zaur status
-        \\    zaur serve --port 8080 --bind 0.0.0.0
-        \\
-        \\OPTIONS (serve):
-        \\    --port <port>       Port to bind to (default: 8080)
-        \\    --bind <address>    Address to bind to (default: 127.0.0.1)
-        \\
-    ;
-    std.debug.print("{s}", .{help_text});
+fn handleGenerate(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.debug.print("Usage: zaur generate <project_directory> [source_url]\n", .{});
+        std.debug.print("Generate PKGBUILD for a Zig or C/C++ project\n", .{});
+        std.debug.print("\nExamples:\n", .{});
+        std.debug.print("  zaur generate ./my-zig-project\n", .{});
+        std.debug.print("  zaur generate ./my-c-project https://github.com/user/repo/archive/main.tar.gz\n", .{});
+        return;
+    }
+
+    const project_dir = args[0];
+    const source_url = if (args.len > 1) args[1] else "https://example.com/source.tar.gz";
+
+    std.debug.print("🔍 Analyzing project: {s}\n", .{project_dir});
+
+    // Check if directory exists
+    std.fs.cwd().access(project_dir, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            std.debug.print("❌ Directory not found: {s}\n", .{project_dir});
+            return;
+        },
+        else => return err,
+    };
+
+    // Import the unified zigbuilder module
+    const zigbuilder = zaur.ZigBuilder;
+    var zb = zigbuilder.init(allocator, project_dir, ".");
+    defer zb.deinit();
+
+    // Analyze project and generate PKGBUILD
+    const project_info = try zb.analyzeProject(project_dir);
+    const pkgbuild = try zb.generatePKGBUILD(project_info, source_url);
+    defer allocator.free(pkgbuild);
+
+    // Write PKGBUILD to file
+    const pkgbuild_path = "PKGBUILD";
+    const file = try std.fs.cwd().createFile(pkgbuild_path, .{});
+    defer file.close();
+
+    try file.writeAll(pkgbuild);
+
+    std.debug.print("✅ Generated PKGBUILD at: {s}\n", .{pkgbuild_path});
+    std.debug.print("\n📋 Next steps:\n", .{});
+    std.debug.print("  1. Review and customize the PKGBUILD if needed\n", .{});
+    std.debug.print("  2. Test build with: makepkg -si\n", .{});
+    std.debug.print("  3. Add to ZAUR with: zaur add local/./\n", .{});
+}
+
+// Mirror management handlers
+fn handleMirrorSync(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+    var db = try zaur.Database.init(allocator, config.db_path);
+    defer db.deinit();
+    
+    var mirror = try zaur.ArchMirror.init(allocator, config.repo_dir, &db);
+    defer mirror.deinit();
+    
+    if (args.len == 0) {
+        try mirror.enableFullMirror();
+    } else {
+        for (args) |repo| {
+            try mirror.syncRepository(repo);
+        }
+    }
+}
+
+fn handleMirrorSmartSync(allocator: std.mem.Allocator) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+    var db = try zaur.Database.init(allocator, config.db_path);
+    defer db.deinit();
+    
+    var mirror = try zaur.ArchMirror.init(allocator, config.repo_dir, &db);
+    defer mirror.deinit();
+    
+    try mirror.smartSync();
+}
+
+fn handleMirrorAutoUpdate(allocator: std.mem.Allocator) !void {
+    const config = try zaur.Config.init(allocator);
+    defer config.deinit();
+    var db = try zaur.Database.init(allocator, config.db_path);
+    defer db.deinit();
+    
+    var mirror = try zaur.ArchMirror.init(allocator, config.repo_dir, &db);
+    defer mirror.deinit();
+    
+    try mirror.autoUpdate();
 }

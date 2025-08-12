@@ -1,150 +1,324 @@
 const std = @import("std");
-const sqlite = @import("sqlite");
-
-pub const Database = struct {
-    db: sqlite.Db,
-    allocator: std.mem.Allocator,
-    path: []const u8,
-
-    pub fn init(allocator: std.mem.Allocator, path: []const u8) !Database {
-        // Convert path to null-terminated string
-        const path_z = try allocator.dupeZ(u8, path);
-        defer allocator.free(path_z);
-
-        const db = try sqlite.Db.init(.{
-            .mode = sqlite.Db.Mode{ .File = path_z },
-            .open_flags = .{
-                .write = true,
-                .create = true,
-            },
-            .threading_mode = .MultiThread,
-        });
-
-        var self = Database{
-            .db = db,
-            .allocator = allocator,
-            .path = try allocator.dupe(u8, path),
-        };
-
-        try self.initSchema();
-        return self;
-    }
-
-    pub fn deinit(self: *Database) void {
-        self.db.deinit();
-        self.allocator.free(self.path);
-    }
-
-    fn initSchema(self: *Database) !void {
-        // Create packages table
-        try self.db.exec(
-            \\CREATE TABLE IF NOT EXISTS packages (
-            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
-            \\    name TEXT UNIQUE NOT NULL,
-            \\    version TEXT NOT NULL DEFAULT 'unknown',
-            \\    description TEXT,
-            \\    source_type TEXT NOT NULL, -- 'aur', 'github', 'local'
-            \\    source_url TEXT NOT NULL,
-            \\    build_status TEXT DEFAULT 'pending', -- 'pending', 'building', 'success', 'failed'
-            \\    last_built TEXT,
-            \\    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            \\);
-        , .{}, .{});
-
-        // Create build logs table
-        try self.db.exec(
-            \\CREATE TABLE IF NOT EXISTS build_logs (
-            \\    id INTEGER PRIMARY KEY AUTOINCREMENT,
-            \\    package_id INTEGER NOT NULL,
-            \\    log_content TEXT,
-            \\    build_time DATETIME DEFAULT CURRENT_TIMESTAMP,
-            \\    success BOOLEAN DEFAULT 0,
-            \\    FOREIGN KEY (package_id) REFERENCES packages(id)
-            \\);
-        , .{}, .{});
-
-        std.debug.print("✓ SQLite database schema initialized\n", .{});
-    }
-
-    pub fn addPackage(self: *Database, name: []const u8, source_type: []const u8, source_url: []const u8) !void {
-        var stmt = try self.db.prepare(
-            \\INSERT OR REPLACE INTO packages (name, source_type, source_url, updated_at) 
-            \\VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-        );
-        defer stmt.deinit();
-
-        try stmt.exec(.{}, .{ .name = name, .source_type = source_type, .source_url = source_url });
-        std.debug.print("✓ Added package to database: {s}\n", .{name});
-    }
-
-    pub fn getPackages(self: *Database, allocator: std.mem.Allocator) ![]Package {
-        var stmt = try self.db.prepare(
-            \\SELECT name, version, description, source_type, source_url, build_status 
-            \\FROM packages ORDER BY name
-        );
-        defer stmt.deinit();
-
-        return try stmt.all(Package, allocator, .{}, .{});
-    }
-
-    pub fn updatePackageBuildStatus(self: *Database, name: []const u8, status: []const u8) !void {
-        var stmt = try self.db.prepare(
-            \\UPDATE packages SET build_status = ?, updated_at = CURRENT_TIMESTAMP 
-            \\WHERE name = ?
-        );
-        defer stmt.deinit();
-
-        try stmt.exec(.{}, .{ .build_status = status, .name = name });
-        std.debug.print("✓ Updated build status for {s}: {s}\n", .{ name, status });
-    }
-
-    pub fn updatePackageVersion(self: *Database, name: []const u8, version: []const u8) !void {
-        var stmt = try self.db.prepare(
-            \\UPDATE packages SET version = ?, updated_at = CURRENT_TIMESTAMP 
-            \\WHERE name = ?
-        );
-        defer stmt.deinit();
-
-        try stmt.exec(.{}, .{ .version = version, .name = name });
-        std.debug.print("✓ Updated version for {s}: {s}\n", .{ name, version });
-    }
-
-    pub fn addBuildLog(self: *Database, package_name: []const u8, log_content: []const u8, success: bool) !void {
-        // First get the package ID
-        var stmt = try self.db.prepare("SELECT id FROM packages WHERE name = ?");
-        defer stmt.deinit();
-
-        const maybe_package_id = try stmt.one(struct { id: i64 }, .{}, .{ .name = package_name });
-        if (maybe_package_id) |row| {
-            var log_stmt = try self.db.prepare(
-                \\INSERT INTO build_logs (package_id, log_content, success) 
-                \\VALUES (?, ?, ?)
-            );
-            defer log_stmt.deinit();
-
-            try log_stmt.exec(.{}, .{ .package_id = row.id, .log_content = log_content, .success = success });
-            std.debug.print("✓ Added build log for {s}\n", .{package_name});
-        } else {
-            std.debug.print("✗ Package not found for build log: {s}\n", .{package_name});
-        }
-    }
-};
+const zqlite = @import("zqlite");
 
 pub const Package = struct {
     name: []const u8,
     version: []const u8,
-    description: ?[]const u8,
     source_type: []const u8,
     source_url: []const u8,
     build_status: []const u8,
+    added_at: []const u8,
 
     pub fn deinit(self: Package, allocator: std.mem.Allocator) void {
         allocator.free(self.name);
         allocator.free(self.version);
-        if (self.description) |desc| allocator.free(desc);
         allocator.free(self.source_type);
         allocator.free(self.source_url);
         allocator.free(self.build_status);
+        allocator.free(self.added_at);
+    }
+};
+
+pub const Database = struct {
+    allocator: std.mem.Allocator,
+    conn: *zqlite.Connection,
+
+    pub fn init(allocator: std.mem.Allocator, db_path: []const u8) !Database {
+        const conn = try zqlite.open(db_path);
+        var db = Database{
+            .allocator = allocator,
+            .conn = conn,
+        };
+        
+        try db.createTables();
+        return db;
+    }
+
+    pub fn deinit(self: *Database) void {
+        self.conn.close();
+    }
+
+    fn createTables(self: *Database) !void {
+        const create_packages_sql = 
+            \\CREATE TABLE IF NOT EXISTS packages (
+            \\    id INTEGER PRIMARY KEY,
+            \\    name TEXT NOT NULL UNIQUE,
+            \\    version TEXT DEFAULT 'unknown',
+            \\    source_type TEXT NOT NULL, -- 'aur', 'github', 'local'
+            \\    source_url TEXT NOT NULL,
+            \\    build_status TEXT DEFAULT 'pending', -- 'pending', 'building', 'success', 'failed'
+            \\    added_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            \\);
+        ;
+
+        const create_builds_sql = 
+            \\CREATE TABLE IF NOT EXISTS builds (
+            \\    id INTEGER PRIMARY KEY,
+            \\    package_id INTEGER NOT NULL,
+            \\    build_log TEXT,
+            \\    status TEXT NOT NULL, -- 'success', 'failed'
+            \\    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    finished_at DATETIME,
+            \\    FOREIGN KEY (package_id) REFERENCES packages(id)
+            \\);
+        ;
+
+        const create_mirror_cache_sql = 
+            \\CREATE TABLE IF NOT EXISTS mirror_cache (
+            \\    id INTEGER PRIMARY KEY,
+            \\    repo_name TEXT NOT NULL, -- 'core', 'extra', 'multilib'
+            \\    package_name TEXT NOT NULL,
+            \\    package_version TEXT NOT NULL,
+            \\    file_path TEXT NOT NULL,
+            \\    file_size INTEGER,
+            \\    cached_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    last_accessed DATETIME DEFAULT CURRENT_TIMESTAMP,
+            \\    UNIQUE(repo_name, package_name, package_version)
+            \\);
+        ;
+
+        _ = try self.conn.execute(create_packages_sql);
+        _ = try self.conn.execute(create_builds_sql);
+        _ = try self.conn.execute(create_mirror_cache_sql);
+    }
+
+    pub fn addPackage(self: *Database, name: []const u8, source_type: []const u8, source_url: []const u8) !void {
+        const sql = 
+            \\INSERT OR REPLACE INTO packages (name, source_type, source_url, build_status) 
+            \\VALUES (?, ?, ?, 'pending');
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, name);
+        try stmt.bind(1, source_type);
+        try stmt.bind(2, source_url);
+        
+        _ = try stmt.execute(self.conn);
+    }
+
+    pub fn updatePackageVersion(self: *Database, name: []const u8, version: []const u8) !void {
+        const sql = 
+            \\UPDATE packages SET version = ?, updated_at = CURRENT_TIMESTAMP 
+            \\WHERE name = ?;
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, version);
+        try stmt.bind(1, name);
+        
+        _ = try stmt.execute(self.conn);
+    }
+
+    pub fn updatePackageBuildStatus(self: *Database, name: []const u8, status: []const u8) !void {
+        const sql = 
+            \\UPDATE packages SET build_status = ?, updated_at = CURRENT_TIMESTAMP 
+            \\WHERE name = ?;
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, status);
+        try stmt.bind(1, name);
+        
+        _ = try stmt.execute(self.conn);
+    }
+
+    pub fn getPackages(self: *Database, allocator: std.mem.Allocator) ![]Package {
+        const sql = 
+            \\SELECT name, version, source_type, source_url, build_status, added_at 
+            \\FROM packages ORDER BY name;
+        ;
+        
+        var result_set = try self.conn.query(sql);
+        defer result_set.deinit();
+        
+        var packages = std.ArrayList(Package).init(allocator);
+        
+        while (result_set.next()) |row| {
+            const package = Package{
+                .name = try allocator.dupe(u8, row.getTextByName("name") orelse "unknown"),
+                .version = try allocator.dupe(u8, row.getTextByName("version") orelse "unknown"),
+                .source_type = try allocator.dupe(u8, row.getTextByName("source_type") orelse "unknown"),
+                .source_url = try allocator.dupe(u8, row.getTextByName("source_url") orelse ""),
+                .build_status = try allocator.dupe(u8, row.getTextByName("build_status") orelse "pending"),
+                .added_at = try allocator.dupe(u8, row.getTextByName("added_at") orelse ""),
+            };
+            try packages.append(package);
+        }
+        
+        return packages.toOwnedSlice();
+    }
+
+    pub fn getPackage(self: *Database, allocator: std.mem.Allocator, name: []const u8) !?Package {
+        const sql = 
+            \\SELECT name, version, source_type, source_url, build_status, added_at 
+            \\FROM packages WHERE name = ? LIMIT 1;
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, name);
+        
+        if (try stmt.queryRow()) |row| {
+            return Package{
+                .name = try allocator.dupe(u8, row.getTextByName("name") orelse "unknown"),
+                .version = try allocator.dupe(u8, row.getTextByName("version") orelse "unknown"),
+                .source_type = try allocator.dupe(u8, row.getTextByName("source_type") orelse "unknown"),
+                .source_url = try allocator.dupe(u8, row.getTextByName("source_url") orelse ""),
+                .build_status = try allocator.dupe(u8, row.getTextByName("build_status") orelse "pending"),
+                .added_at = try allocator.dupe(u8, row.getTextByName("added_at") orelse ""),
+            };
+        }
+        
+        return null;
+    }
+
+    pub fn removePackage(self: *Database, name: []const u8) !void {
+        const sql = "DELETE FROM packages WHERE name = ?;";
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, name);
+        _ = try stmt.execute(self.conn);
+    }
+
+    pub fn getPackageCount(self: *Database) !u32 {
+        const sql = "SELECT COUNT(*) as count FROM packages;";
+        
+        if (try self.conn.queryRow(sql)) |row| {
+            return @intCast(row.getIntByName("count") orelse 0);
+        }
+        
+        return 0;
+    }
+
+    // Mirror cache management
+    pub fn cacheMirrorPackage(self: *Database, repo: []const u8, package_name: []const u8, version: []const u8, file_path: []const u8, file_size: u64) !void {
+        const sql = 
+            \\INSERT OR REPLACE INTO mirror_cache 
+            \\(repo_name, package_name, package_version, file_path, file_size, cached_at, last_accessed) 
+            \\VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, repo);
+        try stmt.bind(1, package_name);
+        try stmt.bind(2, version);
+        try stmt.bind(3, file_path);
+        try stmt.bind(4, @intCast(file_size));
+        
+        _ = try stmt.execute(self.conn);
+    }
+
+    pub fn getCachedPackages(self: *Database, allocator: std.mem.Allocator, repo: []const u8) ![][]const u8 {
+        const sql = 
+            \\SELECT DISTINCT package_name FROM mirror_cache 
+            \\WHERE repo_name = ? ORDER BY package_name;
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, repo);
+        
+        var result_set = try stmt.query();
+        defer result_set.deinit();
+        
+        var packages = std.ArrayList([]const u8).init(allocator);
+        
+        while (result_set.next()) |row| {
+            const package_name = try allocator.dupe(u8, row.getTextByName("package_name") orelse "");
+            try packages.append(package_name);
+        }
+        
+        return packages.toOwnedSlice();
+    }
+
+    pub fn updateLastAccessed(self: *Database, repo: []const u8, package_name: []const u8) !void {
+        const sql = 
+            \\UPDATE mirror_cache SET last_accessed = CURRENT_TIMESTAMP 
+            \\WHERE repo_name = ? AND package_name = ?;
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, repo);
+        try stmt.bind(1, package_name);
+        
+        _ = try stmt.execute(self.conn);
+    }
+
+    pub fn cleanOldCache(self: *Database, days_old: u32) !u32 {
+        const sql = 
+            \\DELETE FROM mirror_cache 
+            \\WHERE last_accessed < datetime('now', '-' || ? || ' days');
+        ;
+        
+        var stmt = try self.conn.prepare(sql);
+        defer stmt.deinit();
+        
+        try stmt.bind(0, @intCast(days_old));
+        
+        return try stmt.execute(self.conn);
+    }
+
+    // Build logging
+    pub fn addBuildLog(self: *Database, package_name: []const u8, status: []const u8, log: []const u8) !void {
+        // First get package ID
+        const get_id_sql = "SELECT id FROM packages WHERE name = ? LIMIT 1;";
+        
+        var id_stmt = try self.conn.prepare(get_id_sql);
+        defer id_stmt.deinit();
+        
+        try id_stmt.bind(0, package_name);
+        
+        if (try id_stmt.queryRow()) |row| {
+            const package_id = row.getIntByName("id") orelse return;
+            
+            const insert_sql = 
+                \\INSERT INTO builds (package_id, status, build_log, finished_at) 
+                \\VALUES (?, ?, ?, CURRENT_TIMESTAMP);
+            ;
+            
+            var stmt = try self.conn.prepare(insert_sql);
+            defer stmt.deinit();
+            
+            try stmt.bind(0, @intCast(package_id));
+            try stmt.bind(1, status);
+            try stmt.bind(2, log);
+            
+            _ = try stmt.execute(self.conn);
+        }
+    }
+
+    // Database introspection using ZQLite v1.2.2 schema APIs
+    pub fn getTableNames(self: *Database, allocator: std.mem.Allocator) ![][]const u8 {
+        return try self.conn.getTableNames(allocator);
+    }
+
+    pub fn getTableSchema(self: *Database, allocator: std.mem.Allocator, table_name: []const u8) ![]zqlite.ColumnInfo {
+        return try self.conn.getTableSchema(allocator, table_name);
+    }
+
+    // Health check
+    pub fn healthCheck(self: *Database) !bool {
+        const sql = "SELECT 1 as test;";
+        
+        if (try self.conn.queryRow(sql)) |row| {
+            return (row.getIntByName("test") orelse 0) == 1;
+        }
+        
+        return false;
     }
 };

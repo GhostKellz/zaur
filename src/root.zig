@@ -9,6 +9,8 @@ pub const HttpServer = @import("server.zig").HttpServer;
 pub const Config = @import("config.zig").Config;
 pub const GpgSigner = @import("gpg.zig").GpgSigner;
 pub const DependencyResolver = @import("deps.zig").DependencyResolver;
+pub const ArchMirror = @import("mirror.zig").ArchMirror;
+pub const ZigBuilder = @import("zigbuilder.zig").ZigBuilder;
 
 pub fn advancedPrint() !void {
     std.debug.print("ZAUR: Zig Arch User Repository initialized!\n", .{});
