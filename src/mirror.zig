@@ -168,14 +168,16 @@ pub const ArchMirror = struct {
         // TODO: Implement real parsing of .db.tar.gz and .files.tar.gz
     }    fn getInstalledPackages(self: *ArchMirror) ![][]const u8 {
         // Query pacman for installed packages
-        var result = std.ArrayList([]const u8).init(self.allocator);
+        var result: std.ArrayList([]const u8) = .{};
         
         // Execute: pacman -Qq
         var process = std.process.Child.init(&[_][]const u8{ "pacman", "-Qq" }, self.allocator);
         process.stdout_behavior = .Pipe;
         
         try process.spawn();
-        const stdout = try process.stdout.?.readToEndAlloc(self.allocator, 1024 * 1024);
+        var buf: [64]u8 = undefined;
+        var reader = process.stdout.?.reader(buf[0..]);
+        const stdout = try reader.interface.readAlloc(self.allocator, 1024 * 1024);
         defer self.allocator.free(stdout);
         
         _ = try process.wait();
@@ -183,11 +185,11 @@ pub const ArchMirror = struct {
         var lines = std.mem.splitScalar(u8, stdout, '\n');
         while (lines.next()) |line| {
             if (line.len > 0) {
-                try result.append(try self.allocator.dupe(u8, line));
+                try result.append(self.allocator, try self.allocator.dupe(u8, line));
             }
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     fn isPackageInRepo(

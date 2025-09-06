@@ -21,26 +21,27 @@ pub const AurClient = struct {
 
         const uri = try std.Uri.parse(uri_string);
 
-        // Use a simple buffer for headers
-        var header_buffer: [4096]u8 = undefined;
-
-        var req = try self.http_client.open(.GET, uri, .{
-            .server_header_buffer = &header_buffer,
+        var unmanaged: std.ArrayList(u8) = .{};
+        defer unmanaged.deinit(self.allocator);
+        
+        var aw: std.Io.Writer.Allocating = .fromArrayList(self.allocator, &unmanaged);
+        
+        const result = try self.http_client.fetch(.{
+            .method = .GET,
+            .location = .{ .uri = uri },
+            .response_writer = &aw.writer,
         });
-        defer req.deinit();
+        
+        unmanaged = aw.toArrayList();
 
-        try req.send();
-        try req.wait();
-
-        if (req.response.status != .ok) {
+        if (result.status != .ok) {
             return null;
         }
 
-        const body = try req.reader().readAllAlloc(self.allocator, 1024 * 1024);
-        defer self.allocator.free(body);
+        const body_slice = unmanaged.items;
 
         // Parse JSON response
-        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body, .{}) catch |err| {
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, body_slice, .{}) catch |err| {
             std.debug.print("Failed to parse AUR response: {}\n", .{err});
             return null;
         };

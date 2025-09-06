@@ -48,8 +48,14 @@ pub const PackageBuilder = struct {
 
         try child.spawn();
 
-        const stdout = try child.stdout.?.readToEndAlloc(self.allocator, 1024 * 1024);
-        const stderr = try child.stderr.?.readToEndAlloc(self.allocator, 1024 * 1024);
+        var stdout_buf: [64]u8 = undefined;
+        var stderr_buf: [64]u8 = undefined;
+        
+        var stdout_reader = child.stdout.?.reader(stdout_buf[0..]);
+        var stderr_reader = child.stderr.?.reader(stderr_buf[0..]);
+        
+        const stdout = try stdout_reader.interface.readAlloc(self.allocator, 1024 * 1024);
+        const stderr = try stderr_reader.interface.readAlloc(self.allocator, 1024 * 1024);
 
         const result = try child.wait();
         const success = result == .Exited and result.Exited == 0;

@@ -73,13 +73,13 @@ pub const HttpServer = struct {
     }
 
     fn serveAPI(self: *HttpServer, connection: std.net.Server.Connection) !void {
-        var json = std.ArrayList(u8).init(self.allocator);
-        defer json.deinit();
+        var json: std.ArrayList(u8) = .{};
+        defer json.deinit(self.allocator);
 
-        try json.appendSlice("{\"packages\":[");
+        try json.appendSlice(self.allocator, "{\"packages\":[");
 
         var dir = std.fs.openDirAbsolute(self.repo_dir, .{ .iterate = true }) catch {
-            try json.appendSlice("]}");
+            try json.appendSlice(self.allocator, "]}");
             try self.sendResponse(connection, "200 OK", "application/json", json.items);
             return;
         };
@@ -89,13 +89,13 @@ pub const HttpServer = struct {
         var iterator = dir.iterate();
         while (try iterator.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".pkg.tar.zst")) {
-                if (!first) try json.appendSlice(",");
-                try json.writer().print("\"{s}\"", .{entry.name});
+                if (!first) try json.appendSlice(self.allocator, ",");
+                try json.print(self.allocator, "\"{s}\"", .{entry.name});
                 first = false;
             }
         }
 
-        try json.appendSlice("]}");
+        try json.appendSlice(self.allocator, "]}");
         try self.sendResponse(connection, "200 OK", "application/json", json.items);
     }
 
@@ -109,7 +109,9 @@ pub const HttpServer = struct {
         };
         defer file.close();
 
-        const contents = try file.readToEndAlloc(self.allocator, 100 * 1024 * 1024);
+        var buf: [64]u8 = undefined;
+        var reader = file.reader(buf[0..]);
+        const contents = try reader.interface.readAlloc(self.allocator, 100 * 1024 * 1024);
         defer self.allocator.free(contents);
 
         try self.sendResponse(connection, "200 OK", self.getContentType(file_name), contents);

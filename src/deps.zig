@@ -13,11 +13,13 @@ pub const DependencyResolver = struct {
         const file = try std.fs.openFileAbsolute(pkgbuild_path, .{});
         defer file.close();
 
-        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
+        var buf: [64]u8 = undefined;
+        var reader = file.reader(buf[0..]);
+        const content = try reader.interface.readAlloc(self.allocator, 1024 * 1024);
         defer self.allocator.free(content);
 
-        var depends = std.ArrayList([]const u8).init(self.allocator);
-        var makedepends = std.ArrayList([]const u8).init(self.allocator);
+        var depends: std.ArrayList([]const u8) = .{};
+        var makedepends: std.ArrayList([]const u8) = .{};
 
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
@@ -56,7 +58,7 @@ pub const DependencyResolver = struct {
             }
 
             if (clean_part.len > 0) {
-                try deps.append(try self.allocator.dupe(u8, clean_part));
+                try deps.append(self.allocator, try self.allocator.dupe(u8, clean_part));
             }
         }
     }
@@ -65,8 +67,8 @@ pub const DependencyResolver = struct {
         var visited = std.HashMap([]const u8, bool, std.hash_map.StringContext, 80).init(self.allocator);
         defer visited.deinit();
 
-        var build_order = std.ArrayList([]const u8).init(self.allocator);
-        defer build_order.deinit();
+        var build_order: std.ArrayList([]const u8) = .{};
+        defer build_order.deinit(self.allocator);
 
         // Topological sort using DFS
         for (packages) |pkg| {
@@ -98,7 +100,7 @@ pub const DependencyResolver = struct {
             }
         }
 
-        try build_order.append(pkg_name);
+        try build_order.append(self.allocator, pkg_name);
     }
 
     pub fn checkZigProject(self: *DependencyResolver, package_dir: []const u8) !bool {

@@ -138,7 +138,7 @@ pub const Database = struct {
         var result_set = try self.conn.query(sql);
         defer result_set.deinit();
         
-        var packages = std.ArrayList(Package).init(allocator);
+        var packages: std.ArrayList(Package) = .{};
         
         while (result_set.next()) |row| {
             const package = Package{
@@ -149,10 +149,10 @@ pub const Database = struct {
                 .build_status = try allocator.dupe(u8, row.getTextByName("build_status") orelse "pending"),
                 .added_at = try allocator.dupe(u8, row.getTextByName("added_at") orelse ""),
             };
-            try packages.append(package);
+            try packages.append(allocator, package);
         }
         
-        return packages.toOwnedSlice();
+        return packages.toOwnedSlice(allocator);
     }
 
     pub fn getPackage(self: *Database, allocator: std.mem.Allocator, name: []const u8) !?Package {
@@ -234,14 +234,14 @@ pub const Database = struct {
         var result_set = try stmt.query();
         defer result_set.deinit();
         
-        var packages = std.ArrayList([]const u8).init(allocator);
+        var packages: std.ArrayList([]const u8) = .{};
         
         while (result_set.next()) |row| {
             const package_name = try allocator.dupe(u8, row.getTextByName("package_name") orelse "");
-            try packages.append(package_name);
+            try packages.append(allocator, package_name);
         }
         
-        return packages.toOwnedSlice();
+        return packages.toOwnedSlice(allocator);
     }
 
     pub fn updateLastAccessed(self: *Database, repo: []const u8, package_name: []const u8) !void {

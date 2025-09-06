@@ -21,12 +21,12 @@ pub const RepoManager = struct {
         };
 
         // Get all .pkg.tar.zst files in the directory
-        var package_files = std.ArrayList([]const u8).init(self.allocator);
+        var package_files: std.ArrayList([]const u8) = .{};
         defer {
             for (package_files.items) |file| {
                 self.allocator.free(file);
             }
-            package_files.deinit();
+            package_files.deinit(self.allocator);
         }
 
         var dir = try std.fs.openDirAbsolute(self.repo_dir, .{ .iterate = true });
@@ -35,7 +35,7 @@ pub const RepoManager = struct {
         var iterator = dir.iterate();
         while (try iterator.next()) |entry| {
             if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".pkg.tar.zst")) {
-                try package_files.append(try self.allocator.dupe(u8, entry.name));
+                try package_files.append(self.allocator, try self.allocator.dupe(u8, entry.name));
             }
         }
 
@@ -45,18 +45,18 @@ pub const RepoManager = struct {
         }
 
         // Build repo-add command
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        defer args.deinit();
+        var args: std.ArrayList([]const u8) = .{};
+        defer args.deinit(self.allocator);
 
         const db_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}.db.tar.zst", .{ self.repo_dir, self.db_name });
         defer self.allocator.free(db_path);
 
-        try args.append("repo-add");
-        try args.append(db_path);
+        try args.append(self.allocator, "repo-add");
+        try args.append(self.allocator, db_path);
         
         for (package_files.items) |pkg_file| {
             const full_path = try std.fmt.allocPrint(self.allocator, "{s}/{s}", .{ self.repo_dir, pkg_file });
-            try args.append(full_path);
+            try args.append(self.allocator, full_path);
         }
 
         // Execute repo-add
@@ -72,6 +72,7 @@ pub const RepoManager = struct {
         for (args.items[2..]) |path| {
             self.allocator.free(path);
         }
+        args.deinit(self.allocator);
 
         std.debug.print("Repository database generated: {s}\n", .{db_path});
     }
