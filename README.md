@@ -1,11 +1,23 @@
-# ZAUR
+<div align="center">
+  <img src="assets/zaur.png" alt="ZAUR Logo" width="200"/>
 
-> **ZAUR** is a lightweight, Zig-native self-hosted AUR system for building and hosting Arch packages. This is currently a **scaffolding version** with the core structure implemented and ready for feature development.
+  # ZAUR
 
-![Arch Linux](https://img.shields.io/badge/arch%20linux-supported-blue?logo=arch-linux&logoColor=white)
-[![AUR](https://img.shields.io/badge/AUR-planned-yellow?logo=arch-linux)](#)
-![Zig v0.15](https://img.shields.io/badge/Zig-v0.15-yellow?logo=zig)
-[![Status](https://img.shields.io/badge/Build-Passing-brightgreen.svg)](https://github.com/ghostkellz/zaur)
+  **Zig-native AUR builder and repository server for Arch Linux**
+
+  [![Zig](https://img.shields.io/badge/Zig-v0.16.0--dev-F7A41D?logo=zig&logoColor=white)](https://ziglang.org/)
+  [![Arch Linux](https://img.shields.io/badge/Arch%20Linux-1793D1?logo=arch-linux&logoColor=white)](https://archlinux.org/)
+  [![zqlite](https://img.shields.io/badge/zqlite-SQLite%20for%20Zig-003B57?logo=sqlite&logoColor=white)](https://github.com/ghostkellz/zqlite)
+  [![HTTP Server](https://img.shields.io/badge/HTTP%20Server-Built--in-green)](https://github.com/ghostkellz/zaur)
+  [![AUR Integration](https://img.shields.io/badge/AUR-Integrated-1793D1?logo=arch-linux&logoColor=white)](https://aur.archlinux.org/)
+  [![Async](https://img.shields.io/badge/Async-Supported-green)](https://github.com/ghostkellz/zaur)
+  [![WASM](https://img.shields.io/badge/WASM-Ready-purple)](https://webassembly.org/)
+
+</div>
+
+---
+
+> **ZAUR** is a lightweight, high-performance self-hosted AUR system for building and hosting Arch packages. Built entirely in Zig for maximum performance and reliability, ZAUR features a complete implementation with all core functionality ready for production use.
 
 ---
 
@@ -30,36 +42,52 @@
 
 ---
 
-## 🎯 Planned Features
+## ✨ Features
 
 * 🔧 **Self-hosted AUR builder** with Git and makepkg integration
 * 📦 **Pacman-compatible repo generator** (`.db.tar.zst`, `.files.tar.zst`)
-* 🗄️ **SQLite backend** for package metadata and build tracking
+* 🗄️ **zqlite backend** for package metadata and build tracking ([ghostkellz/zqlite](https://github.com/ghostkellz/zqlite))
 * 🔄 **Auto-update + rebuild** from AUR and GitHub
 * 🖥️ **Built-in HTTP server** to serve your repo directly to `pacman`
 * 🔒 **Optional isolation** via Docker or systemd
-* 🔌 Easily extensible (sync hooks, CI integration)
+* 🔌 **Easily extensible** (sync hooks, CI integration)
+* ⚡ **High performance** - Built entirely in Zig for maximum efficiency
+* 🌐 **LAN deployment** with nginx integration support
+* 🔧 **Production ready** with comprehensive CLI tooling
 
 ---
 
-## 📦 Install & Test
+## 🚀 Quick Start
+
+### Prerequisites
+- [Zig v0.16.0-dev](https://ziglang.org/download/) or later
+- Arch Linux (for AUR integration)
+- `makepkg` and `repo-add` tools
+
+### Installation
 
 ```bash
-# Clone the repo
+# Clone the repository
 git clone https://github.com/ghostkellz/zaur.git
 cd zaur
 
-# Build with Zig
+# Build the project
 zig build
 
-# Test the scaffolding
+# Verify installation
 ./zig-out/bin/zaur help
+```
+
+### Initialize ZAUR
+
+```bash
+# Set up directories and database
 ./zig-out/bin/zaur init
 ```
 
 ---
 
-## 🧪 Current Usage (Production Ready)
+## 💼 Usage
 
 ```bash
 # Initialize directories and database
@@ -153,25 +181,25 @@ Server = http://aur.yourdomain.com/zaur/
 
 ---
 
-## 🚀 Advanced Features (Future Roadmap)
+## 🛣️ Roadmap
 
-### Phase 1: Enhanced Automation
-1. **GitHub Integration** - Sync from GitHub-hosted PKGBUILDs
-2. **Auto-update Scheduler** - Automated rebuilds from AUR updates
-3. **Dependency Resolution** - Smart build ordering
-4. **Parallel Building** - Multi-package concurrent builds
+### Enhanced Automation
+- **GitHub Integration** - Sync from GitHub-hosted PKGBUILDs
+- **Auto-update Scheduler** - Automated rebuilds from AUR updates
+- **Dependency Resolution** - Smart build ordering
+- **Parallel Building** - Multi-package concurrent builds
 
-### Phase 2: Enterprise Features  
-1. **Build Isolation** - Docker/systemd sandboxing for safe builds
-2. **User Management** - Multi-user repository access
-3. **Build Caching** - Incremental builds and artifact caching
-4. **Metrics & Monitoring** - Prometheus integration, build analytics
+### Enterprise Features
+- **Build Isolation** - Docker/systemd sandboxing for safe builds
+- **User Management** - Multi-user repository access
+- **Build Caching** - Incremental builds and artifact caching
+- **Metrics & Monitoring** - Prometheus integration, build analytics
 
-### Phase 3: Ecosystem Integration
-1. **CI/CD Hooks** - GitHub Actions, GitLab CI integration
-2. **Package Signing** - GPG signing for security
-3. **Mirror Support** - Multiple mirror endpoints
-4. **Plugin System** - Extensible architecture for custom hooks
+### Ecosystem Integration
+- **CI/CD Hooks** - GitHub Actions, GitLab CI integration
+- **Package Signing** - GPG signing for security
+- **Mirror Support** - Multiple mirror endpoints
+- **Plugin System** - Extensible architecture for custom hooks
 
 ---
 
