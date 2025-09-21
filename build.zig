@@ -27,11 +27,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
-    
-    const zqlite = b.dependency("zqlite", .{
-        .target = target,
-        .optimize = optimize,
-    });
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -53,7 +48,6 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .imports = &.{
             .{ .name = "zsync", .module = zsync.module("zsync") },
-            .{ .name = "zqlite", .module = zqlite.module("zqlite") },
         },
     });
 
@@ -99,8 +93,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
-    // No external linking needed - using pure Zig dependencies
-    // exe.linkLibC();  // Only if needed for other C libraries
+    // Link sqlite3 library
+    exe.linkLibC();
+    exe.linkSystemLibrary("sqlite3");
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

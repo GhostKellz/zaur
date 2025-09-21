@@ -24,7 +24,7 @@ pub const ZigBuilder = struct {
     pub fn isZigProject(_: *ZigBuilder, project_path: []const u8) bool {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const build_zig_path = std.fmt.bufPrint(path_buf[0..], "{s}/build.zig", .{project_path}) catch return false;
-        
+
         std.fs.accessAbsolute(build_zig_path, .{}) catch return false;
         return true;
     }
@@ -33,12 +33,14 @@ pub const ZigBuilder = struct {
     pub fn analyzeProject(self: *ZigBuilder, project_path: []const u8) !ZigProjectInfo {
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const zon_path = std.fmt.bufPrint(path_buf[0..], "{s}/build.zig.zon", .{project_path}) catch return error.PathTooLong;
-        
+
         const file = std.fs.openFileAbsolute(zon_path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
-                var targets: std.ArrayList([]const u8) = .{};
+                var targets = std.ArrayList([]const u8){};
+                defer targets.deinit(self.allocator);
                 try targets.append(self.allocator, "zaur");
-                var deps: std.ArrayList([]const u8) = .{};
+                var deps = std.ArrayList([]const u8){};
+                defer deps.deinit(self.allocator);
                 return ZigProjectInfo{
                     .name = "unknown-zig-project",
                     .version = "0.1.0",
@@ -51,22 +53,23 @@ pub const ZigBuilder = struct {
         };
         defer file.close();
 
-        var buf: [64]u8 = undefined;
-        var reader = file.reader(buf[0..]);
-        const content = try reader.interface.readAlloc(self.allocator, 1024 * 1024); // Max 1MB
-        defer self.allocator.free(content);
+        var content_buf: [1024 * 1024]u8 = undefined; // Max 1MB
+        const bytes_read = try file.readAll(&content_buf);
+        const content = content_buf[0..bytes_read];
 
         return try self.parseZigZon(content);
     }
 
     /// Generates PKGBUILD for a Zig project
     pub fn generatePKGBUILD(self: *ZigBuilder, project_info: ZigProjectInfo, source_url: []const u8) ![]const u8 {
-        var targets_str: std.ArrayList(u8) = .{};
+        var targets_str = std.ArrayList(u8){};
         defer targets_str.deinit(self.allocator);
 
         for (project_info.targets, 0..) |target, i| {
             if (i > 0) try targets_str.appendSlice(self.allocator, " ");
-            try targets_str.print(self.allocator, "'{s}'", .{target});
+            const quoted = try std.fmt.allocPrint(self.allocator, "'{s}'", .{target});
+            defer self.allocator.free(quoted);
+            try targets_str.appendSlice(self.allocator, quoted);
         }
 
         const pkgbuild = try std.fmt.allocPrint(self.allocator,
@@ -146,10 +149,10 @@ pub const ZigBuilder = struct {
 
         // Change to project directory and run zig build
         const args = [_][]const u8{
-            "zig", "build",
-            try std.fmt.allocPrint(allocator, "-Doptimize={s}", .{optimize_mode}),
-            "--prefix-exe-dir", "bin",
-            "--prefix-lib-dir", "lib",
+            "zig",                                                                 "build",
+            try std.fmt.allocPrint(allocator, "-Doptimize={s}", .{optimize_mode}), "--prefix-exe-dir",
+            "bin",                                                                 "--prefix-lib-dir",
+            "lib",
         };
 
         var child = std.process.Child.init(&args, allocator);
@@ -159,13 +162,10 @@ pub const ZigBuilder = struct {
 
         try child.spawn();
 
-        var stdout_buf: [64]u8 = undefined;
-        var stdout_reader = child.stdout.?.reader(stdout_buf[0..]);
-        const stdout = try stdout_reader.interface.readAlloc(allocator, 1024 * 1024);
-        var stderr_buf: [64]u8 = undefined;
-        var stderr_reader = child.stderr.?.reader(stderr_buf[0..]);
-        const stderr = try stderr_reader.interface.readAlloc(allocator, 1024 * 1024);
-
+        const stdout = try child.stdout.?.readToEndAlloc(allocator, 1024 * 1024);
+        var stderr_buf: [1024 * 1024]u8 = undefined;
+        const stderr_bytes = try child.stderr.?.readAll(&stderr_buf);
+        const stderr = stderr_buf[0..stderr_bytes];
         const term = try child.wait();
 
         return BuildResult{
@@ -182,19 +182,20 @@ pub const ZigBuilder = struct {
         defer arena.deinit();
         const allocator = arena.allocator();
 
-        var build_log: std.ArrayList(u8) = .{};
+        var build_log = std.ArrayList(u8){};
         var success = true;
 
         // Compile each C file with Zig's C compiler
         for (c_files) |c_file| {
             const args = [_][]const u8{
                 "zig", "cc",
-                "-O3",                    // Zig's superior optimizations
-                "-march=native",          // Native CPU optimizations
-                "-fPIC",                  // Position independent code
-                "-std=c99",               // C standard
+                "-O3", // Zig's superior optimizations
+                "-march=native", // Native CPU optimizations
+                "-fPIC", // Position independent code
+                "-std=c99", // C standard
                 c_file,
-                "-o", try std.fmt.allocPrint(allocator, "{s}.o", .{c_file[0..c_file.len-2]}),
+                "-o",
+                try std.fmt.allocPrint(allocator, "{s}.o", .{c_file[0 .. c_file.len - 2]}),
             };
 
             var child = std.process.Child.init(&args, allocator);
@@ -203,16 +204,18 @@ pub const ZigBuilder = struct {
             child.stderr_behavior = .Pipe;
 
             try child.spawn();
-            var stderr_buf: [64]u8 = undefined;
-        var stderr_reader = child.stderr.?.reader(stderr_buf[0..]);
-        const stderr = try stderr_reader.interface.readAlloc(allocator, 1024 * 1024);
+            const stderr = try child.stderr.?.readToEndAlloc(allocator, 1024 * 1024);
             const term = try child.wait();
 
             if (term != .Exited or term.Exited != 0) {
                 success = false;
-                try build_log.print(self.allocator, "Failed to compile {s}:\n{s}\n", .{ c_file, stderr });
+                const msg = try std.fmt.allocPrint(allocator, "Failed to compile {s}:\n{s}\n", .{ c_file, stderr });
+                defer allocator.free(msg);
+                try build_log.appendSlice(allocator, msg);
             } else {
-                try build_log.print(self.allocator, "✓ Compiled {s} with Zig\n", .{c_file});
+                const msg = try std.fmt.allocPrint(allocator, "✓ Compiled {s} with Zig\n", .{c_file});
+                defer allocator.free(msg);
+                try build_log.appendSlice(allocator, msg);
             }
         }
 
@@ -304,7 +307,7 @@ pub const ZigBuilder = struct {
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t");
-            
+
             if (std.mem.startsWith(u8, trimmed, ".name = ")) {
                 // Extract name from .name = "something" or .name = .something
                 if (std.mem.indexOf(u8, trimmed, "\"")) |start| {
@@ -324,7 +327,7 @@ pub const ZigBuilder = struct {
                     }
                 }
             }
-            
+
             if (std.mem.startsWith(u8, trimmed, ".version = ")) {
                 if (std.mem.indexOf(u8, trimmed, "\"")) |start| {
                     if (std.mem.lastIndexOf(u8, trimmed, "\"")) |end| {
@@ -336,9 +339,12 @@ pub const ZigBuilder = struct {
             }
         }
 
-        var targets: std.ArrayList([]const u8) = .{};
+        var targets = std.ArrayList([]const u8){};
+        defer targets.deinit(self.allocator);
         try targets.append(self.allocator, try self.allocator.dupe(u8, name));
-        var deps: std.ArrayList([]const u8) = .{};
+        var deps = std.ArrayList([]const u8){};
+        defer deps.deinit(self.allocator);
+
         return ZigProjectInfo{
             .name = try self.allocator.dupe(u8, name),
             .version = try self.allocator.dupe(u8, version),
@@ -349,37 +355,41 @@ pub const ZigBuilder = struct {
     }
 
     fn generateInstallCommands(self: *ZigBuilder, targets: [][]const u8) ![]const u8 {
-        var commands: std.ArrayList(u8) = .{};
-        
+        var commands = std.ArrayList(u8){};
+        defer commands.deinit(self.allocator);
+
         for (targets) |target| {
-            try commands.print(self.allocator,
+            const cmd = try std.fmt.allocPrint(self.allocator,
                 \\    # Install {s}
                 \\    if [ -f zig-out/bin/{s} ]; then
                 \\        install -Dm755 zig-out/bin/{s} "$pkgdir/usr/bin/{s}"
                 \\    fi
                 \\
             , .{ target, target, target, target });
+            defer self.allocator.free(cmd);
+            try commands.appendSlice(self.allocator, cmd);
         }
-        
+
         return commands.toOwnedSlice(self.allocator);
     }
 
     fn findBuildArtifacts(self: *ZigBuilder, project_path: []const u8) ![][]const u8 {
-        var artifacts: std.ArrayList([]const u8) = .{};
-        
+        var artifacts = std.ArrayList([]const u8){};
+        defer artifacts.deinit(self.allocator);
+
         var path_buf: [std.fs.max_path_bytes]u8 = undefined;
         const zig_out_path = std.fmt.bufPrint(path_buf[0..], "{s}/zig-out/bin", .{project_path}) catch return artifacts.toOwnedSlice(self.allocator);
-        
+
         var dir = std.fs.openDirAbsolute(zig_out_path, .{ .iterate = true }) catch return artifacts.toOwnedSlice(self.allocator);
         defer dir.close();
-        
+
         var iterator = dir.iterate();
         while (try iterator.next()) |entry| {
             if (entry.kind == .file) {
                 try artifacts.append(self.allocator, try self.allocator.dupe(u8, entry.name));
             }
         }
-        
+
         return artifacts.toOwnedSlice(self.allocator);
     }
 };

@@ -13,7 +13,7 @@ pub const ArchMirror = struct {
 
     pub fn init(allocator: std.mem.Allocator, cache_dir: []const u8, database: *Database) !ArchMirror {
         const http_client = std.http.Client{ .allocator = allocator };
-        
+
         return ArchMirror{
             .allocator = allocator,
             .http_client = http_client,
@@ -34,12 +34,12 @@ pub const ArchMirror = struct {
         // Create repository directory
         const repo_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ self.cache_dir, "mirror", repo });
         defer self.allocator.free(repo_dir);
-        
+
         try std.fs.cwd().makePath(repo_dir);
 
         // Download repository database
         try self.downloadRepoDatabase(repo, repo_dir);
-        
+
         // Parse and cache selective packages
         try self.parseAndCachePackages(repo, repo_dir);
 
@@ -87,7 +87,7 @@ pub const ArchMirror = struct {
 
         // Generate pacman configuration
         try self.generatePacmanConfig();
-        
+
         std.debug.print("✓ Full mirror mode enabled\n", .{});
         std.debug.print("📝 Update your /etc/pacman.conf with the generated configuration\n", .{});
     }
@@ -109,25 +109,18 @@ pub const ArchMirror = struct {
 
     fn downloadRepoDatabase(self: *ArchMirror, repo: []const u8, dest_dir: []const u8) !void {
         const db_files = [_][]const u8{ "db", "files" };
-        
+
         for (db_files) |db_type| {
-            const url = try std.fmt.allocPrint(
-                self.allocator, 
-                "{s}/{s}/os/x86_64/{s}.{s}.tar.gz",
-                .{ self.mirror_url, repo, repo, db_type }
-            );
+            const url = try std.fmt.allocPrint(self.allocator, "{s}/{s}/os/x86_64/{s}.{s}.tar.gz", .{ self.mirror_url, repo, repo, db_type });
             defer self.allocator.free(url);
 
-            const dest_file = try std.fs.path.join(self.allocator, &[_][]const u8{ 
-                dest_dir, 
-                try std.fmt.allocPrint(self.allocator, "{s}.{s}.tar.gz", .{ repo, db_type })
-            });
+            const dest_file = try std.fs.path.join(self.allocator, &[_][]const u8{ dest_dir, try std.fmt.allocPrint(self.allocator, "{s}.{s}.tar.gz", .{ repo, db_type }) });
             defer self.allocator.free(dest_file);
 
             // Use built-in HTTP client for downloading
             const file = try std.fs.cwd().createFile(dest_file, .{});
             defer file.close();
-            
+
             // For now, create placeholder files (actual HTTP download would go here)
             try file.writeAll("# Placeholder repository database file\n");
             std.debug.print("📥 Downloaded {s}\n", .{db_type});
@@ -138,11 +131,7 @@ pub const ArchMirror = struct {
         // Download the .pkg.tar.zst file for the given package from the mirror
         // For now, assume the latest version is desired and construct the URL
         // In a full implementation, parse the repo database for the exact version/filename
-        const pkg_url = try std.fmt.allocPrint(
-            self.allocator,
-            "{s}/{s}/os/x86_64/{s}-latest-x86_64.pkg.tar.zst",
-            .{ self.mirror_url, repo, pkg_name }
-        );
+        const pkg_url = try std.fmt.allocPrint(self.allocator, "{s}/{s}/os/x86_64/{s}-latest-x86_64.pkg.tar.zst", .{ self.mirror_url, repo, pkg_name });
         defer self.allocator.free(pkg_url);
 
         const dest_dir = try std.fs.path.join(self.allocator, &.{ self.cache_dir, "mirror", repo });
@@ -156,7 +145,7 @@ pub const ArchMirror = struct {
         const file = try std.fs.cwd().createFile(dest_file, .{});
         defer file.close();
         try file.writeAll("# Placeholder package file\n");
-        
+
         std.debug.print("📦 Downloaded package: {s}\n", .{pkg_name});
     }
 
@@ -166,20 +155,22 @@ pub const ArchMirror = struct {
         _ = self;
         std.debug.print("[mirror] parseAndCachePackages: repo={s} dir={s}\n", .{ repo, repo_dir });
         // TODO: Implement real parsing of .db.tar.gz and .files.tar.gz
-    }    fn getInstalledPackages(self: *ArchMirror) ![][]const u8 {
+    }
+    fn getInstalledPackages(self: *ArchMirror) ![][]const u8 {
         // Query pacman for installed packages
-        var result: std.ArrayList([]const u8) = .{};
-        
+        var result = std.ArrayList([]const u8){};
+        defer result.deinit(self.allocator);
+
         // Execute: pacman -Qq
         var process = std.process.Child.init(&[_][]const u8{ "pacman", "-Qq" }, self.allocator);
         process.stdout_behavior = .Pipe;
-        
+
         try process.spawn();
-        var buf: [64]u8 = undefined;
-        var reader = process.stdout.?.reader(buf[0..]);
-        const stdout = try reader.interface.readAlloc(self.allocator, 1024 * 1024);
-        defer self.allocator.free(stdout);
-        
+
+        var stdout_buf: [1024 * 1024]u8 = undefined;
+        const bytes_read = try process.stdout.?.readAll(&stdout_buf);
+        const stdout = stdout_buf[0..bytes_read];
+
         _ = try process.wait();
 
         var lines = std.mem.splitScalar(u8, stdout, '\n');
@@ -192,11 +183,7 @@ pub const ArchMirror = struct {
         return result.toOwnedSlice(self.allocator);
     }
 
-    fn isPackageInRepo(
-        _: *ArchMirror,
-        _: []const u8,
-        _: []const u8
-    ) !bool {
+    fn isPackageInRepo(_: *ArchMirror, _: []const u8, _: []const u8) !bool {
         // Check if package exists in the given repository
         // For now, always return true (stub)
         // TODO: Implement by parsing repo database
@@ -208,7 +195,8 @@ pub const ArchMirror = struct {
         // For now, just print a message (stub)
         std.debug.print("[mirror] checkRepoUpdates: repo={s}\n", .{repo});
         // TODO: Compare local vs remote database versions
-    }    fn generatePacmanConfig(self: *ArchMirror) !void {
+    }
+    fn generatePacmanConfig(self: *ArchMirror) !void {
         const config_path = try std.fs.path.join(self.allocator, &[_][]const u8{ self.cache_dir, "pacman.conf.zaur" });
         defer self.allocator.free(config_path);
 

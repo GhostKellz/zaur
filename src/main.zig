@@ -554,10 +554,10 @@ fn handleMirrorSync(allocator: std.mem.Allocator, args: []const []const u8) !voi
     defer config.deinit();
     var db = try zaur.Database.init(allocator, config.db_path);
     defer db.deinit();
-    
+
     var mirror = try zaur.ArchMirror.init(allocator, config.repo_dir, &db);
     defer mirror.deinit();
-    
+
     if (args.len == 0) {
         try mirror.enableFullMirror();
     } else {
@@ -572,10 +572,10 @@ fn handleMirrorSmartSync(allocator: std.mem.Allocator) !void {
     defer config.deinit();
     var db = try zaur.Database.init(allocator, config.db_path);
     defer db.deinit();
-    
+
     var mirror = try zaur.ArchMirror.init(allocator, config.repo_dir, &db);
     defer mirror.deinit();
-    
+
     try mirror.smartSync();
 }
 
@@ -584,9 +584,9 @@ fn handleMirrorAutoUpdate(allocator: std.mem.Allocator) !void {
     defer config.deinit();
     var db = try zaur.Database.init(allocator, config.db_path);
     defer db.deinit();
-    
+
     var mirror = try zaur.ArchMirror.init(allocator, config.repo_dir, &db);
     defer mirror.deinit();
-    
+
     try mirror.autoUpdate();
 }
