@@ -25,7 +25,7 @@
     .fingerprint = 0x8090a350bccc7360, // Changing this has security and trust implications.
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.16.0-dev.164+bc7955306",
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
     // `zig build --fetch` can be used to fetch all dependencies of a package, recursively.
@@ -37,8 +37,8 @@
             .hash = "zsync-0.5.4-KAuheV0SHQBxubuzXagj1oq5B2KE4VhMWTAAAaInwB2_",
         },
         .zqlite = .{
-            .url = "https://github.com/ghostkellz/zqlite/archive/main.tar.gz",
-            .hash = "zqlite-1.2.5-0Cdu4tJ8DgBa7wQAf6Oe7-6XEYcX7BeVpVKoW8PdUfAe",
+            .url = "https://github.com/ghostkellz/zqlite/archive/refs/heads/main.tar.gz",
+            .hash = "zqlite-1.3.3-0Cdu4sGaEQDBdWpJL6yrOb3JbVWJzo86j2z8SSJr3L3d",
         },
     },
     .paths = .{
