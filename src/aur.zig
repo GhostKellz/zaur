@@ -2,17 +2,24 @@ const std = @import("std");
 
 pub const AurClient = struct {
     allocator: std.mem.Allocator,
+    threaded_io: std.Io.Threaded,
     http_client: std.http.Client,
 
     pub fn init(allocator: std.mem.Allocator) AurClient {
+        var threaded_io: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
         return AurClient{
             .allocator = allocator,
-            .http_client = std.http.Client{ .allocator = allocator },
+            .threaded_io = threaded_io,
+            .http_client = std.http.Client{
+                .allocator = allocator,
+                .io = threaded_io.io(),
+            },
         };
     }
 
     pub fn deinit(self: *AurClient) void {
         self.http_client.deinit();
+        self.threaded_io.deinit();
     }
 
     pub fn searchPackage(self: *AurClient, package_name: []const u8) !?AurPackage {
@@ -21,17 +28,17 @@ pub const AurClient = struct {
 
         const uri = try std.Uri.parse(uri_string);
 
-        var unmanaged: std.ArrayList(u8) = .{};
+        var unmanaged: std.ArrayList(u8) = .empty;
         defer unmanaged.deinit(self.allocator);
-        
+
         var aw: std.Io.Writer.Allocating = .fromArrayList(self.allocator, &unmanaged);
-        
+
         const result = try self.http_client.fetch(.{
             .method = .GET,
             .location = .{ .uri = uri },
             .response_writer = &aw.writer,
         });
-        
+
         unmanaged = aw.toArrayList();
 
         if (result.status != .ok) {
@@ -76,11 +83,13 @@ pub const AurClient = struct {
         const dest_path = try std.fs.path.join(self.allocator, &.{ dest_dir, package_name });
         defer self.allocator.free(dest_path);
 
-        // Execute git clone
-        var child = std.process.Child.init(&.{ "git", "clone", git_url, dest_path }, self.allocator);
-        const result = try child.spawnAndWait();
+        const result = try std.process.run(self.allocator, self.threaded_io.io(), .{
+            .argv = &.{ "git", "clone", git_url, dest_path },
+        });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
 
-        if (result != .Exited or result.Exited != 0) {
+        if (result.term != .exited or result.term.exited != 0) {
             return error.GitCloneFailed;
         }
     }
@@ -106,11 +115,13 @@ pub const AurClient = struct {
         const dest_path = try std.fs.path.join(self.allocator, &.{ dest_dir, repo });
         defer self.allocator.free(dest_path);
 
-        // Clone repository
-        var child = std.process.Child.init(&.{ "git", "clone", "-b", branch, git_url, dest_path }, self.allocator);
-        const result = try child.spawnAndWait();
+        const result = try std.process.run(self.allocator, self.threaded_io.io(), .{
+            .argv = &.{ "git", "clone", "-b", branch, git_url, dest_path },
+        });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
 
-        if (result != .Exited or result.Exited != 0) {
+        if (result.term != .exited or result.term.exited != 0) {
             return error.GitCloneFailed;
         }
 
@@ -122,7 +133,7 @@ pub const AurClient = struct {
             const pkgbuild_dst = try std.fs.path.join(self.allocator, &.{ dest_path, "PKGBUILD" });
             defer self.allocator.free(pkgbuild_dst);
 
-            std.fs.copyFileAbsolute(pkgbuild_src, pkgbuild_dst, .{}) catch |err| {
+            std.Io.Dir.copyFileAbsolute(pkgbuild_src, pkgbuild_dst, self.threaded_io.io(), .{}) catch |err| {
                 std.debug.print("Warning: Could not find PKGBUILD at {s}: {}\n", .{ pkgbuild_src, err });
             };
         }

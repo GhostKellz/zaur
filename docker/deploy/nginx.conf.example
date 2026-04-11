@@ -1,0 +1,115 @@
+# ZAUR Nginx Configuration Example
+# Place in /etc/nginx/sites-available/ and symlink to sites-enabled/
+
+# Upstream ZAUR server
+upstream zaur {
+    server 127.0.0.1:9004;
+    keepalive 32;
+}
+
+# AUR packages - aur.cktech.org
+server {
+    listen 80;
+    listen [::]:80;
+    server_name aur.cktech.org;
+
+    # Redirect to HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name aur.cktech.org;
+
+    ssl_certificate /etc/letsencrypt/live/aur.cktech.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/aur.cktech.org/privkey.pem;
+
+    # Serve AUR repository
+    location / {
+        proxy_pass http://zaur/aur/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # API access
+    location /api/ {
+        proxy_pass http://zaur/api/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
+
+# Custom packages - pkg.cktech.org
+server {
+    listen 80;
+    listen [::]:80;
+    server_name pkg.cktech.org;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name pkg.cktech.org;
+
+    ssl_certificate /etc/letsencrypt/live/pkg.cktech.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pkg.cktech.org/privkey.pem;
+
+    location / {
+        proxy_pass http://zaur/custom/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Arch mirror - mirror.cktech.org
+server {
+    listen 80;
+    listen [::]:80;
+    server_name mirror.cktech.org;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name mirror.cktech.org;
+
+    ssl_certificate /etc/letsencrypt/live/mirror.cktech.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mirror.cktech.org/privkey.pem;
+
+    location / {
+        proxy_pass http://zaur/mirror/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+
+# Optional: Single domain with paths (alternative setup)
+# server {
+#     listen 443 ssl http2;
+#     server_name zaur.cktech.org;
+#
+#     ssl_certificate /etc/letsencrypt/live/zaur.cktech.org/fullchain.pem;
+#     ssl_certificate_key /etc/letsencrypt/live/zaur.cktech.org/privkey.pem;
+#
+#     location /aur/ {
+#         proxy_pass http://zaur/aur/;
+#     }
+#     location /custom/ {
+#         proxy_pass http://zaur/custom/;
+#     }
+#     location /mirror/ {
+#         proxy_pass http://zaur/mirror/;
+#     }
+#     location /api/ {
+#         proxy_pass http://zaur/api/;
+#     }
+# }

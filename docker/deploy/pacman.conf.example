@@ -1,0 +1,22 @@
+# ZAUR Repository Configuration
+# Add these sections to /etc/pacman.conf on client machines
+
+# AUR packages from ZAUR
+[aur]
+SigLevel = Optional TrustAll
+Server = https://aur.cktech.org/
+
+# Custom packages from ZAUR
+[custom]
+SigLevel = Optional TrustAll
+Server = https://pkg.cktech.org/
+
+# Arch mirror via ZAUR (optional - replaces official mirrors)
+# [core]
+# Server = https://mirror.cktech.org/core/os/$arch
+#
+# [extra]
+# Server = https://mirror.cktech.org/extra/os/$arch
+#
+# [multilib]
+# Server = https://mirror.cktech.org/multilib/os/$arch

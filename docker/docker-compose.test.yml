@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  zaur-test:
+    build:
+      context: .
+      dockerfile: Dockerfile.test
+    container_name: zaur-test
+    network_mode: host
+    volumes:
+      # Mount project source
+      - ..:/workspace:rw
+      # Mount zig from host system
+      - /opt/zig-0.16.0-dev:/opt/zig:ro
+      # Persist test data between runs
+      - zaur-test-data:/var/lib/zaur
+    environment:
+      - PATH=/opt/zig:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+      - ZAUR_DATA_DIR=/var/lib/zaur
+      - ZAUR_CONFIG_DIR=/workspace/.zaur
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+    command: /bin/bash
+
+volumes:
+  zaur-test-data:

@@ -129,7 +129,6 @@ install_zaur() {
     
     # Install documentation
     install -Dm644 README.md /usr/share/doc/zaur/README.md
-    install -Dm644 DOCS.md /usr/share/doc/zaur/DOCS.md 2>/dev/null || true
     install -Dm644 LICENSE /usr/share/licenses/zaur/LICENSE
     
     log_success "ZAUR binaries installed"
@@ -150,26 +149,38 @@ setup_service() {
     chown -R "$SERVICE_USER:$SERVICE_USER" "$SERVICE_DIR"
     chmod 755 "$SERVICE_DIR"
     
-    # Create systemd service file
-    cat > /etc/systemd/system/zaur.service << 'EOF'
+    # Install systemd service file from repo
+    if [[ -f "$INSTALL_DIR/zaur.service" ]]; then
+        install -Dm644 "$INSTALL_DIR/zaur.service" /usr/lib/systemd/system/zaur.service
+    else
+        # Fallback: create service file inline
+        cat > /usr/lib/systemd/system/zaur.service << 'EOF'
 [Unit]
-Description=ZAUR - Self-hosted AUR system
+Description=ZAUR - Zig Arch User Repository
 After=network.target
 
 [Service]
-Type=exec
+Type=simple
 User=zaur
 Group=zaur
-WorkingDirectory=/var/lib/zaur
-ExecStart=/usr/bin/zaur serve --port 8080 --bind 0.0.0.0
-Restart=always
-RestartSec=10
+Environment=ZAUR_DATA_ROOT=/var/lib/zaur
+Environment=ZAUR_BIND=127.0.0.1
+Environment=ZAUR_PORT=9004
+ExecStart=/usr/bin/zaur serve
+Restart=on-failure
+RestartSec=5
 StandardOutput=journal
 StandardError=journal
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/zaur
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    fi
     
     # Reload systemd
     systemctl daemon-reload
@@ -180,16 +191,16 @@ EOF
 # Initialize ZAUR
 initialize_zaur() {
     log_info "Initializing ZAUR..."
-    
-    # Initialize as service user
-    sudo -u "$SERVICE_USER" /usr/bin/zaur init || {
+
+    # Initialize as service user with correct data root
+    sudo -u "$SERVICE_USER" ZAUR_DATA_ROOT="$SERVICE_DIR" /usr/bin/zaur init || {
         log_warn "Failed to initialize as service user, trying manual setup..."
-        
+
         # Create database manually if needed
         sudo -u "$SERVICE_USER" touch "$SERVICE_DIR/zaur.db"
         sudo -u "$SERVICE_USER" chmod 644 "$SERVICE_DIR/zaur.db"
     }
-    
+
     log_success "ZAUR initialized"
 }
 
@@ -197,15 +208,15 @@ initialize_zaur() {
 setup_firewall() {
     if command -v ufw &> /dev/null; then
         log_info "Configuring firewall..."
-        ufw allow 8080/tcp comment "ZAUR HTTP server"
-        log_success "Firewall configured for port 8080"
+        ufw allow 9004/tcp comment "ZAUR HTTP server"
+        log_success "Firewall configured for port 9004"
     elif command -v firewall-cmd &> /dev/null; then
         log_info "Configuring firewalld..."
-        firewall-cmd --permanent --add-port=8080/tcp
+        firewall-cmd --permanent --add-port=9004/tcp
         firewall-cmd --reload
-        log_success "Firewalld configured for port 8080"
+        log_success "Firewalld configured for port 9004"
     else
-        log_warn "No firewall detected. Remember to open port 8080 if using a firewall"
+        log_warn "No firewall detected. Remember to open port 9004 if using a firewall"
     fi
 }
 
@@ -224,7 +235,7 @@ show_completion() {
     echo -e "Binary installed at: ${GREEN}/usr/bin/zaur${NC}"
     echo -e "Service user: ${GREEN}$SERVICE_USER${NC}"
     echo -e "Data directory: ${GREEN}$SERVICE_DIR${NC}"
-    echo -e "Service file: ${GREEN}/etc/systemd/system/zaur.service${NC}"
+    echo -e "Service file: ${GREEN}/usr/lib/systemd/system/zaur.service${NC}"
     echo
     echo -e "${BLUE}=== Next Steps ===${NC}"
     echo -e "1. Start the service: ${GREEN}sudo systemctl start zaur${NC}"
@@ -238,12 +249,17 @@ show_completion() {
     echo -e "Build packages: ${GREEN}sudo -u $SERVICE_USER zaur build all${NC}"
     echo -e "List packages: ${GREEN}sudo -u $SERVICE_USER zaur list${NC}"
     echo
-    echo -e "${BLUE}=== Web Interface ===${NC}"
-    echo -e "Once started, ZAUR will be available at: ${GREEN}http://localhost:8080${NC}"
-    echo -e "Configure pacman: Add to /etc/pacman.conf:"
-    echo -e "${YELLOW}[zaur]${NC}"
+    echo -e "${BLUE}=== Pacman Configuration ===${NC}"
+    echo -e "Once started, ZAUR will be available at: ${GREEN}http://localhost:9004${NC}"
+    echo -e "Add to /etc/pacman.conf:"
+    echo
+    echo -e "${YELLOW}[aur]${NC}"
     echo -e "${YELLOW}SigLevel = Optional TrustAll${NC}"
-    echo -e "${YELLOW}Server = http://localhost:8080/${NC}"
+    echo -e "${YELLOW}Server = http://localhost:9004/aur/${NC}"
+    echo
+    echo -e "${YELLOW}[custom]${NC}"
+    echo -e "${YELLOW}SigLevel = Optional TrustAll${NC}"
+    echo -e "${YELLOW}Server = http://localhost:9004/custom/${NC}"
     echo
 }
 

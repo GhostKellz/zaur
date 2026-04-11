@@ -10,7 +10,21 @@ pub const Config = @import("config.zig").Config;
 pub const GpgSigner = @import("gpg.zig").GpgSigner;
 pub const DependencyResolver = @import("deps.zig").DependencyResolver;
 pub const ArchMirror = @import("mirror.zig").ArchMirror;
+pub const MirrorCommands = @import("mirror.zig").MirrorCommands;
 pub const ZigBuilder = @import("zigbuilder.zig").ZigBuilder;
+pub const RustBuilder = @import("rustbuilder.zig").RustBuilder;
+pub const Source = @import("database.zig").Source;
+pub const SourceKind = @import("database.zig").SourceKind;
+pub const SourceSpec = @import("source.zig").SourceSpec;
+pub const SourceManager = @import("source.zig");
+pub const SecurityManager = @import("security.zig").SecurityManager;
+pub const vercmp = @import("version.zig").vercmp;
+pub const Advisory = @import("database.zig").Advisory;
+pub const PackageSecurityStatus = @import("database.zig").PackageSecurityStatus;
+pub const Severity = @import("database.zig").Severity;
+pub const AdvisoryStatus = @import("database.zig").AdvisoryStatus;
+pub const StaleStatus = @import("database.zig").StaleStatus;
+pub const SignatureStatus = @import("database.zig").SignatureStatus;
 
 pub fn advancedPrint() !void {
     std.debug.print("ZAUR: Zig Arch User Repository initialized!\n", .{});

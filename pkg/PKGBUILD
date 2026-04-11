@@ -1,0 +1,51 @@
+# Maintainer: GhostKellz <github.com/ghostkellz>
+pkgname=zaur
+pkgver=0.1.2
+pkgrel=1
+pkgdesc="Zig-native AUR builder and repository server"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ghostkellz/zaur"
+license=('MIT')
+depends=('pacman' 'git' 'gnupg')
+makedepends=('zig')
+optdepends=('nginx: reverse proxy for production')
+backup=()
+source=("$pkgname-$pkgver.tar.gz::https://github.com/ghostkellz/zaur/archive/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    zig build -Doptimize=ReleaseSafe
+}
+
+check() {
+    cd "$srcdir/$pkgname-$pkgver"
+    zig build test
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    # Install binary
+    install -Dm755 zig-out/bin/zaur "$pkgdir/usr/bin/zaur"
+
+    # Install systemd service
+    install -Dm644 zaur.service "$pkgdir/usr/lib/systemd/system/zaur.service"
+
+    # Install documentation
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 docs/configuration.md "$pkgdir/usr/share/doc/$pkgname/configuration.md"
+    install -Dm644 docs/deployment.md "$pkgdir/usr/share/doc/$pkgname/deployment.md"
+    install -Dm644 docs/installation.md "$pkgdir/usr/share/doc/$pkgname/installation.md"
+
+    # Install license
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
+
+post_install() {
+    echo "==> Post-installation steps:"
+    echo "    1. Create service user: useradd -r -s /bin/false -d /var/lib/zaur -m zaur"
+    echo "    2. Initialize: sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur init"
+    echo "    3. Start service: systemctl start zaur"
+    echo "    4. Enable on boot: systemctl enable zaur"
+}

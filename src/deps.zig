@@ -2,24 +2,22 @@ const std = @import("std");
 
 pub const DependencyResolver = struct {
     allocator: std.mem.Allocator,
+    threaded_io: std.Io.Threaded,
 
     pub fn init(allocator: std.mem.Allocator) DependencyResolver {
         return DependencyResolver{
             .allocator = allocator,
+            .threaded_io = .init(std.heap.smp_allocator, .{}),
         };
     }
 
     pub fn parsePkgbuildDependencies(self: *DependencyResolver, pkgbuild_path: []const u8) !PackageDependencies {
-        const file = try std.fs.openFileAbsolute(pkgbuild_path, .{});
-        defer file.close();
-
-        var buf: [64]u8 = undefined;
-        var reader = file.reader(buf[0..]);
-        const content = try reader.interface.readAlloc(self.allocator, 1024 * 1024);
+        const io = self.threaded_io.io();
+        const content = try std.Io.Dir.readFileAlloc(.cwd(), io, pkgbuild_path, self.allocator, .limited(1024 * 1024));
         defer self.allocator.free(content);
 
-        var depends: std.ArrayList([]const u8) = .{};
-        var makedepends: std.ArrayList([]const u8) = .{};
+        var depends: std.ArrayList([]const u8) = .empty;
+        var makedepends: std.ArrayList([]const u8) = .empty;
 
         var lines = std.mem.splitScalar(u8, content, '\n');
         while (lines.next()) |line| {
@@ -67,7 +65,7 @@ pub const DependencyResolver = struct {
         var visited = std.HashMap([]const u8, bool, std.hash_map.StringContext, 80).init(self.allocator);
         defer visited.deinit();
 
-        var build_order: std.ArrayList([]const u8) = .{};
+        var build_order: std.ArrayList([]const u8) = .empty;
         defer build_order.deinit(self.allocator);
 
         // Topological sort using DFS
@@ -104,10 +102,11 @@ pub const DependencyResolver = struct {
     }
 
     pub fn checkZigProject(self: *DependencyResolver, package_dir: []const u8) !bool {
+        const io = self.threaded_io.io();
         const build_zig = try std.fs.path.join(self.allocator, &.{ package_dir, "build.zig" });
         defer self.allocator.free(build_zig);
 
-        std.fs.accessAbsolute(build_zig, .{}) catch {
+        std.Io.Dir.accessAbsolute(io, build_zig, .{}) catch {
             return false; // Not a Zig project
         };
 
@@ -115,6 +114,7 @@ pub const DependencyResolver = struct {
     }
 
     pub fn generateZigPkgbuild(self: *DependencyResolver, package_name: []const u8, package_dir: []const u8) !void {
+        const io = self.threaded_io.io();
         const pkgbuild_content = try std.fmt.allocPrint(self.allocator,
             \\# Maintainer: GhostCTL AUR <aur@ghostctl.com>
             \\pkgname={s}
@@ -143,10 +143,10 @@ pub const DependencyResolver = struct {
         const pkgbuild_path = try std.fs.path.join(self.allocator, &.{ package_dir, "PKGBUILD" });
         defer self.allocator.free(pkgbuild_path);
 
-        const file = try std.fs.createFileAbsolute(pkgbuild_path, .{});
-        defer file.close();
-
-        try file.writeAll(pkgbuild_content);
+        try std.Io.Dir.writeFile(.cwd(), io, .{
+            .sub_path = pkgbuild_path,
+            .data = pkgbuild_content,
+        });
         std.debug.print("🦎 Generated Zig PKGBUILD for: {s}\n", .{package_name});
     }
 };

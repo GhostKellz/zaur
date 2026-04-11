@@ -1,0 +1,31 @@
+services:
+  zaur:
+    build:
+      context: ../..
+      dockerfile: docker/deploy/Dockerfile
+    container_name: zaur
+    ports:
+      - "127.0.0.1:9004:9004"
+    volumes:
+      - zaur_data:/var/lib/zaur
+    environment:
+      - ZAUR_DATA_ROOT=/var/lib/zaur
+      - ZAUR_BIND=0.0.0.0
+      - ZAUR_PORT=9004
+      # Uncomment to enable API authentication
+      # - ZAUR_API_TOKEN=your-secret-token
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:9004/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  zaur_data:

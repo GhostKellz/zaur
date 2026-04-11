@@ -1,4 +1,12 @@
-/zig-cache/
-/zig-out/
+.zig-cache/
+zig-out/
+zig-pkg/
 *.o
 *.exe
+CLAUDE.md
+tasks/
+archive/
+
+# Runtime data directories
+.zaur/
+.tmp/

@@ -1,0 +1,23 @@
+FROM archlinux:latest
+
+# Update system and install dependencies
+RUN pacman -Syu --noconfirm && \
+    pacman -S --noconfirm \
+    base-devel \
+    git \
+    pacman-contrib \
+    curl \
+    jq \
+    && pacman -Scc --noconfirm
+
+# Create test user (makepkg won't run as root)
+RUN useradd -m -G wheel builder && \
+    echo "builder ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+# Set up workspace
+WORKDIR /workspace
+
+# Default to builder user for package operations
+USER builder
+
+CMD ["/bin/bash"]

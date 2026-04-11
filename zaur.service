@@ -1,0 +1,31 @@
+[Unit]
+Description=ZAUR - Zig Arch User Repository
+Documentation=https://github.com/ghostkellz/zaur
+After=network.target
+
+[Service]
+Type=simple
+User=zaur
+Group=zaur
+Environment=ZAUR_DATA_ROOT=/var/lib/zaur
+Environment=ZAUR_BIND=127.0.0.1
+Environment=ZAUR_PORT=9004
+ExecStart=/usr/bin/zaur serve
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/zaur
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+
+[Install]
+WantedBy=multi-user.target

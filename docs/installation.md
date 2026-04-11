@@ -50,14 +50,10 @@ sudo install -Dm644 LICENSE /usr/share/licenses/zaur/LICENSE
 
 ```bash
 # Create service user
-sudo useradd -r -s /bin/false -d /var/lib/zaur -c "ZAUR service user" zaur
-
-# Create directories
-sudo mkdir -p /var/lib/zaur/{packages,build}
-sudo chown -R zaur:zaur /var/lib/zaur
+sudo useradd -r -s /bin/false -d /var/lib/zaur -m zaur
 
 # Install systemd service
-sudo cp zaur.service /etc/systemd/system/
+sudo install -Dm644 zaur.service /usr/lib/systemd/system/zaur.service
 sudo systemctl daemon-reload
 ```
 
@@ -65,7 +61,7 @@ sudo systemctl daemon-reload
 
 ```bash
 # Initialize ZAUR
-sudo -u zaur zaur init
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur init
 
 # Start service
 sudo systemctl start zaur
@@ -73,6 +69,7 @@ sudo systemctl enable zaur
 
 # Check status
 sudo systemctl status zaur
+curl http://localhost:9004/api/health
 ```
 
 ## Package Installation Methods
@@ -104,9 +101,13 @@ paru -S zaur
 Add to `/etc/pacman.conf`:
 
 ```ini
-[zaur]
+[aur]
 SigLevel = Optional TrustAll
-Server = http://localhost:8080/
+Server = http://localhost:9004/aur/
+
+[custom]
+SigLevel = Optional TrustAll
+Server = http://localhost:9004/custom/
 ```
 
 ### Nginx Reverse Proxy (Optional)
@@ -117,7 +118,7 @@ server {
     server_name aur.yourdomain.com;
     
     location /zaur/ {
-        proxy_pass http://localhost:8080/;
+        proxy_pass http://localhost:9004/;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -130,23 +131,34 @@ server {
 
 ```bash
 # Add packages from AUR
-sudo -u zaur zaur add aur/yay
-sudo -u zaur zaur add aur/firefox
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur source add aur/yay
+
+# Add from GitHub
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur source add github:user/repo
+
+# List sources
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur source list
 
 # Build all packages
-sudo -u zaur zaur build all
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur build all
 
-# List repository
-sudo -u zaur zaur list
+# Publish repository database
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur repo publish
+
+# List packages
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur list
 
 # Check status
-sudo -u zaur zaur status
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur status
 
-# Clean old builds
-sudo -u zaur zaur clean 3
+# Backup database
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur backup
 
-# Start HTTP server (if not using systemd)
-sudo -u zaur zaur serve --port 8080 --bind 0.0.0.0
+# Restore from backup
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur restore <backup_file>
+
+# Clean old builds (keep 3 versions)
+sudo -u zaur ZAUR_DATA_ROOT=/var/lib/zaur zaur clean 3
 ```
 
 ### Service Management
@@ -188,23 +200,28 @@ sudo systemctl disable zaur
 
 # Remove files
 sudo rm /usr/bin/zaur
-sudo rm /etc/systemd/system/zaur.service
+sudo rm /usr/lib/systemd/system/zaur.service
+sudo systemctl daemon-reload
 sudo rm -rf /var/lib/zaur
 sudo rm -rf /usr/share/doc/zaur
+sudo rm -rf /usr/share/licenses/zaur
 
 # Remove user
 sudo userdel zaur
 
 # Remove from pacman.conf
-sudo sed -i '/\[zaur\]/,+2d' /etc/pacman.conf
+sudo sed -i '/\[aur\]/,+2d' /etc/pacman.conf
+sudo sed -i '/\[custom\]/,+2d' /etc/pacman.conf
 ```
 
 ## Security Notes
 
 - ZAUR runs as unprivileged `zaur` user
-- Default binding is `0.0.0.0:8080` (change if needed)
-- No authentication by default (add reverse proxy if needed)
+- Default binding is `127.0.0.1:9004` (localhost only)
+- Set `ZAUR_API_TOKEN` to require authentication for admin endpoints
+- Set `ZAUR_GPG_KEY` to enable package signing
 - Packages are built in isolated directory under `/var/lib/zaur`
+- Systemd service includes security hardening (NoNewPrivileges, ProtectSystem, etc.)
 
 ## Support
 
