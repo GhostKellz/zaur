@@ -68,8 +68,19 @@ pub const RustBuilder = struct {
         return try self.parseCargoToml(content, project_path);
     }
 
+    /// Compute the `sha256sums=()` value for a generated source tarball by
+    /// downloading and hashing it. Falls back to "SKIP" if the source can't be
+    /// fetched, so generation never silently fails. Caller owns the result.
+    fn sourceChecksum(self: *RustBuilder, source_url: []const u8) []const u8 {
+        const integrity = @import("integrity.zig");
+        return integrity.sha256Url(self.allocator, self.threaded_io.io(), source_url) catch
+            (self.allocator.dupe(u8, "SKIP") catch "SKIP");
+    }
+
     /// Generates PKGBUILD for a Rust project
     pub fn generatePKGBUILD(self: *RustBuilder, project_info: RustProjectInfo, source_url: []const u8) ![]const u8 {
+        const checksum = self.sourceChecksum(source_url);
+        defer self.allocator.free(checksum);
         const rust_deps = if (project_info.dependencies.len > 0)
             "'rust' 'cargo'"
         else
@@ -98,7 +109,7 @@ pub const RustBuilder = struct {
             \\license=('{s}')
             \\makedepends=({s})
             \\source=("$pkgname-$pkgver.tar.gz::{s}")
-            \\sha256sums=('SKIP')
+            \\sha256sums=('{s}')
             \\
             \\prepare() {{
             \\    cd "$srcdir"/*
@@ -193,6 +204,7 @@ pub const RustBuilder = struct {
             project_info.license,
             rust_deps,
             source_url,
+            checksum,
             build_targets,
             install_commands,
         });
@@ -242,6 +254,8 @@ pub const RustBuilder = struct {
 
     /// Creates a WASM-specific PKGBUILD for Rust projects that compile to WebAssembly
     pub fn generateWasmPKGBUILD(self: *RustBuilder, project_info: RustProjectInfo, source_url: []const u8) ![]const u8 {
+        const checksum = self.sourceChecksum(source_url);
+        defer self.allocator.free(checksum);
         const pkgbuild = try std.fmt.allocPrint(self.allocator,
             \\# Maintainer: ZAUR (Zig Arch User Repository)
             \\# Auto-generated PKGBUILD for Rust WASM project
@@ -255,7 +269,7 @@ pub const RustBuilder = struct {
             \\license=('{s}')
             \\makedepends=('rust' 'cargo' 'wasm-pack')
             \\source=("$pkgname-$pkgver.tar.gz::{s}")
-            \\sha256sums=('SKIP')
+            \\sha256sums=('{s}')
             \\
             \\build() {{
             \\    cd "$srcdir"/*
@@ -304,6 +318,7 @@ pub const RustBuilder = struct {
             if (project_info.homepage.len > 0) project_info.homepage else if (project_info.repository.len > 0) project_info.repository else source_url,
             project_info.license,
             source_url,
+            checksum,
             project_info.name,
             project_info.name,
             project_info.name,

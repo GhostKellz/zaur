@@ -104,6 +104,13 @@ fn printHelp() !void {
         \\    security status <package>   Show status for specific package
         \\    security scan [all]         Recompute security status for all packages
         \\    security scan <package>     Recompute status for specific package
+        \\    security scan-pkgbuild <s>  Static-analyze a source's PKGBUILD/scripts
+        \\    security verify-commit <s>  Verify the source HEAD's GPG signature
+        \\    security trust-key <fpr>    Add a GPG fingerprint to the trust list
+        \\    security untrust-key <fpr>  Remove a fingerprint from the trust list
+        \\    security list-keys          List trusted GPG fingerprints
+        \\    security pin <source> [ref] Pin a source to a ref/commit
+        \\    security unpin <source>     Remove a source pin
         \\
         \\COMPATIBILITY ALIASES:
         \\    add <spec>
@@ -217,22 +224,37 @@ fn handleSource(allocator: std.mem.Allocator, environ_map: *const std.process.En
 }
 
 fn handleBuild(allocator: std.mem.Allocator, environ_map: *const std.process.Environ.Map, args: []const []const u8) !void {
-    const action = if (args.len > 0 and !std.mem.eql(u8, args[0], "all")) args[0] else "run";
+    // Separate the optional `--isolation=` flag from positional arguments.
+    var positional: std.ArrayList([]const u8) = .empty;
+    defer positional.deinit(allocator);
+    var isolation_override: ?zaur.BuildIsolation = null;
+    for (args) |arg| {
+        if (std.mem.startsWith(u8, arg, "--isolation=")) {
+            isolation_override = zaur.BuildIsolation.fromString(arg["--isolation=".len..]);
+        } else {
+            try positional.append(allocator, arg);
+        }
+    }
+    const pargs = positional.items;
+
+    const action = if (pargs.len > 0 and !std.mem.eql(u8, pargs[0], "all")) pargs[0] else "run";
 
     if (std.mem.eql(u8, action, "logs")) {
-        const target = if (args.len > 1) args[1] else if (args.len == 1 and !std.mem.eql(u8, args[0], "logs")) args[0] else null;
+        const target = if (pargs.len > 1) pargs[1] else if (pargs.len == 1 and !std.mem.eql(u8, pargs[0], "logs")) pargs[0] else null;
         return handleBuildLogs(allocator, environ_map, target);
     }
 
     const target = if (std.mem.eql(u8, action, "run")) blk: {
-        if (args.len > 1) break :blk args[1];
-        if (args.len == 1 and !std.mem.eql(u8, args[0], "run")) break :blk args[0];
+        if (pargs.len > 1) break :blk pargs[1];
+        if (pargs.len == 1 and !std.mem.eql(u8, pargs[0], "run")) break :blk pargs[0];
         break :blk "all";
-    } else args[0];
+    } else pargs[0];
 
     var ctx = try openConfigAndDb(allocator, environ_map);
     defer ctx.db.deinit();
     defer ctx.config.deinit();
+
+    if (isolation_override) |iso| ctx.config.build_isolation = iso;
 
     if (std.mem.eql(u8, target, "all")) {
         const packages = try ctx.db.getPackages(allocator);
@@ -261,7 +283,7 @@ fn buildSinglePackage(allocator: std.mem.Allocator, db: *zaur.Database, config: 
     };
     defer source.deinit(allocator);
 
-    var builder = zaur.PackageBuilder.init(allocator, config.source_root, config.build_root, config.repoDirForName(repo_name), &config);
+    var builder = zaur.PackageBuilder.init(allocator, config.source_root, config.build_root, config.repoDirForName(repo_name), &config, db);
     defer builder.deinit();
     const result = try builder.buildPackage(package_name);
     defer result.deinit(allocator);
@@ -307,6 +329,7 @@ fn handleRepo(allocator: std.mem.Allocator, environ_map: *const std.process.Envi
             std.debug.print("Failed to generate AUR repo: {}\n", .{err});
             failed = true;
         };
+        aur_repo.signDatabase(&config);
 
         var custom_repo = zaur.RepoManager.init(allocator, config.custom_repo_dir, "custom");
         defer custom_repo.deinit();
@@ -314,6 +337,7 @@ fn handleRepo(allocator: std.mem.Allocator, environ_map: *const std.process.Envi
             std.debug.print("Failed to generate custom repo: {}\n", .{err});
             failed = true;
         };
+        custom_repo.signDatabase(&config);
 
         if (failed) return error.PublishFailed;
         return;
@@ -750,8 +774,156 @@ fn handleSecurity(allocator: std.mem.Allocator, environ_map: *const std.process.
         return;
     }
 
+    if (std.mem.eql(u8, action, "scan-pkgbuild")) {
+        if (args.len < 2) {
+            std.debug.print("Usage: zaur security scan-pkgbuild <source>\n", .{});
+            return;
+        }
+        try handleScanPkgbuild(allocator, &ctx.config, &ctx.db, args[1]);
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "verify-commit")) {
+        if (args.len < 2) {
+            std.debug.print("Usage: zaur security verify-commit <source>\n", .{});
+            return;
+        }
+        try handleVerifyCommit(allocator, &ctx.config, &ctx.db, args[1]);
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "trust-key")) {
+        if (args.len < 2) {
+            std.debug.print("Usage: zaur security trust-key <fingerprint> [note]\n", .{});
+            return;
+        }
+        const note = if (args.len > 2) args[2] else "";
+        try ctx.db.addTrustedKey(args[1], "", note);
+        std.debug.print("Trusted key added: {s}\n", .{args[1]});
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "untrust-key")) {
+        if (args.len < 2) {
+            std.debug.print("Usage: zaur security untrust-key <fingerprint>\n", .{});
+            return;
+        }
+        try ctx.db.removeTrustedKey(args[1]);
+        std.debug.print("Trusted key removed: {s}\n", .{args[1]});
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "list-keys")) {
+        const keys = try ctx.db.getTrustedKeys(allocator);
+        defer {
+            for (keys) |k| k.deinit(allocator);
+            allocator.free(keys);
+        }
+        if (keys.len == 0) {
+            std.debug.print("No trusted keys. Add one with 'zaur security trust-key <fingerprint>'.\n", .{});
+            return;
+        }
+        std.debug.print("Trusted keys ({d}):\n", .{keys.len});
+        for (keys) |k| {
+            std.debug.print("  {s}", .{k.fingerprint});
+            if (k.note.len > 0) std.debug.print("  ({s})", .{k.note});
+            std.debug.print("\n", .{});
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "pin")) {
+        if (args.len < 2) {
+            std.debug.print("Usage: zaur security pin <source> [ref]\n", .{});
+            return;
+        }
+        try handlePin(allocator, &ctx.config, &ctx.db, args[1], if (args.len > 2) args[2] else null);
+        return;
+    }
+
+    if (std.mem.eql(u8, action, "unpin")) {
+        if (args.len < 2) {
+            std.debug.print("Usage: zaur security unpin <source>\n", .{});
+            return;
+        }
+        try ctx.db.setSourcePin(args[1], null, "", null, null);
+        std.debug.print("Unpinned source: {s}\n", .{args[1]});
+        return;
+    }
+
     std.debug.print("Unknown security action: {s}\n", .{action});
-    std.debug.print("Usage: zaur security <sync|status|scan> ...\n", .{});
+    std.debug.print("Usage: zaur security <sync|status|scan|scan-pkgbuild|verify-commit|trust-key|untrust-key|list-keys|pin|unpin> ...\n", .{});
+}
+
+fn handleScanPkgbuild(allocator: std.mem.Allocator, config: *const zaur.Config, db: *zaur.Database, source_name: []const u8) !void {
+    var threaded_io: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+
+    const checkout_dir = try config.sourceCheckoutDir(allocator, source_name);
+    defer allocator.free(checkout_dir);
+
+    const findings = try zaur.Scanner.scanSourceTree(allocator, io, checkout_dir);
+    defer {
+        for (findings) |f| f.deinit(allocator);
+        allocator.free(findings);
+    }
+
+    // Persist: replace any prior findings for this source.
+    try db.clearScanFindings(source_name);
+    for (findings) |f| {
+        try db.addScanFinding(source_name, f.rule_id, f.severity.asString(), f.file_name, f.line_no, f.excerpt, f.message);
+    }
+
+    if (findings.len == 0) {
+        std.debug.print("No findings for {s}.\n", .{source_name});
+        return;
+    }
+
+    std.debug.print("Findings for {s} ({d}):\n", .{ source_name, findings.len });
+    for (findings) |f| {
+        std.debug.print("  [{s}] {s}:{d} {s} — {s}\n", .{ f.severity.asString(), f.file_name, f.line_no, f.rule_id, f.message });
+    }
+    if (zaur.Scanner.shouldBlock(findings)) {
+        std.debug.print("\nWould be BLOCKED under enforce policy (critical/high present).\n", .{});
+    }
+}
+
+fn handleVerifyCommit(allocator: std.mem.Allocator, config: *const zaur.Config, db: *zaur.Database, source_name: []const u8) !void {
+    const checkout_dir = try config.sourceCheckoutDir(allocator, source_name);
+    defer allocator.free(checkout_dir);
+
+    var signer = zaur.GpgSigner.init(allocator, config);
+    defer signer.deinit();
+
+    const result = try signer.verifyGitCommit(checkout_dir, "HEAD");
+    defer result.deinit(allocator);
+
+    std.debug.print("Commit signature for {s}: {s}\n", .{ source_name, result.status.asString() });
+    if (result.fingerprint) |fpr| {
+        const trusted = db.isKeyTrusted(fpr) catch false;
+        std.debug.print("  Signer: {s} ({s})\n", .{ fpr, if (trusted) "TRUSTED" else "untrusted" });
+    }
+}
+
+fn handlePin(allocator: std.mem.Allocator, config: *const zaur.Config, db: *zaur.Database, source_name: []const u8, ref: ?[]const u8) !void {
+    var threaded_io: std.Io.Threaded = .init(std.heap.smp_allocator, .{});
+    defer threaded_io.deinit();
+    const io = threaded_io.io();
+
+    const checkout_dir = try config.sourceCheckoutDir(allocator, source_name);
+    defer allocator.free(checkout_dir);
+
+    if (ref) |r| {
+        try zaur.Integrity.checkoutRef(allocator, io, checkout_dir, r);
+        try db.setSourcePin(source_name, null, r, null, null);
+    }
+    const commit = try zaur.Integrity.resolveGitHead(allocator, io, checkout_dir);
+    defer allocator.free(commit);
+    // When no ref is given, pin to the current HEAD commit.
+    const pin_ref = ref orelse commit;
+    try db.setSourcePin(source_name, null, pin_ref, commit, null);
+    std.debug.print("Pinned {s} to {s} (commit {s})\n", .{ source_name, pin_ref, commit });
 }
 
 fn printPackageSecurityStatus(s: zaur.PackageSecurityStatus) void {

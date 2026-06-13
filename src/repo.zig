@@ -84,6 +84,25 @@ pub const RepoManager = struct {
         std.debug.print("Repository database generated: {s}\n", .{db_path});
     }
 
+    /// Detached-sign the generated repo database (`<db>.db.tar.zst.sig`) so
+    /// pacman clients with `SigLevel = Required` can verify it. No-op when no
+    /// GPG key is configured. Best-effort: signing failure is logged, not fatal.
+    pub fn signDatabase(self: *RepoManager, config: *const @import("config.zig").Config) void {
+        if (config.gpg_key_id == null) return;
+
+        const db_path = std.fmt.allocPrint(self.allocator, "{s}/{s}.db.tar.zst", .{ self.repo_dir, self.db_name }) catch return;
+        defer self.allocator.free(db_path);
+
+        std.Io.Dir.accessAbsolute(self.threaded_io.io(), db_path, .{}) catch return;
+
+        const GpgSigner = @import("gpg.zig").GpgSigner;
+        var signer = GpgSigner.init(self.allocator, config);
+        defer signer.deinit();
+        signer.signRepoDb(db_path) catch |err| {
+            std.debug.print("Warning: could not sign repo database {s}: {}\n", .{ db_path, err });
+        };
+    }
+
     pub fn cleanOldPackages(self: *RepoManager, keep_versions: u32) !void {
         const io = self.threaded_io.io();
 

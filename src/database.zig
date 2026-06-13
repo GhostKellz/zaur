@@ -1,7 +1,7 @@
 const std = @import("std");
 const zqlite = @import("zqlite");
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 // Concurrency Model (v1 Design):
 // Single shared SQLite connection protected by application-level spinlock.
@@ -280,6 +280,55 @@ pub const ColumnInfo = struct {
     has_default: bool,
 };
 
+pub const TrustedKey = struct {
+    fingerprint: []const u8,
+    owner: []const u8,
+    note: []const u8,
+    added_at: []const u8,
+
+    pub fn deinit(self: TrustedKey, allocator: std.mem.Allocator) void {
+        allocator.free(self.fingerprint);
+        allocator.free(self.owner);
+        allocator.free(self.note);
+        allocator.free(self.added_at);
+    }
+};
+
+pub const ScanFinding = struct {
+    source_name: []const u8,
+    rule_id: []const u8,
+    severity: []const u8,
+    file_name: []const u8,
+    line_no: u32,
+    excerpt: []const u8,
+    message: []const u8,
+    scanned_at: []const u8,
+
+    pub fn deinit(self: ScanFinding, allocator: std.mem.Allocator) void {
+        allocator.free(self.source_name);
+        allocator.free(self.rule_id);
+        allocator.free(self.severity);
+        allocator.free(self.file_name);
+        allocator.free(self.excerpt);
+        allocator.free(self.message);
+        allocator.free(self.scanned_at);
+    }
+};
+
+/// Pinning / integrity metadata for a single source row.
+pub const SourcePin = struct {
+    source_hash: []const u8,
+    pinned_ref: []const u8,
+    resolved_commit: []const u8,
+    require_signed_commit: bool,
+
+    pub fn deinit(self: SourcePin, allocator: std.mem.Allocator) void {
+        allocator.free(self.source_hash);
+        allocator.free(self.pinned_ref);
+        allocator.free(self.resolved_commit);
+    }
+};
+
 pub const Database = struct {
     allocator: std.mem.Allocator,
     db_path: []const u8,
@@ -337,7 +386,11 @@ pub const Database = struct {
             \\    package_subpath TEXT NOT NULL DEFAULT '',
             \\    repo_name TEXT NOT NULL,
             \\    created_at TEXT NOT NULL,
-            \\    updated_at TEXT NOT NULL
+            \\    updated_at TEXT NOT NULL,
+            \\    source_hash TEXT NOT NULL DEFAULT '',
+            \\    pinned_ref TEXT NOT NULL DEFAULT '',
+            \\    resolved_commit TEXT NOT NULL DEFAULT '',
+            \\    require_signed_commit INTEGER NOT NULL DEFAULT 0
             \\)
         );
 
@@ -419,6 +472,31 @@ pub const Database = struct {
             \\)
         );
 
+        // Supply-chain hardening: GPG keys trusted to sign ingested git commits
+        try self.conn.execute(
+            \\CREATE TABLE IF NOT EXISTS trusted_keys (
+            \\    fingerprint TEXT PRIMARY KEY,
+            \\    owner TEXT NOT NULL DEFAULT '',
+            \\    note TEXT NOT NULL DEFAULT '',
+            \\    added_at TEXT NOT NULL
+            \\)
+        );
+
+        // Supply-chain hardening: PKGBUILD/source static-analysis findings
+        try self.conn.execute(
+            \\CREATE TABLE IF NOT EXISTS pkgbuild_scan_findings (
+            \\    id INTEGER PRIMARY KEY,
+            \\    source_name TEXT NOT NULL,
+            \\    rule_id TEXT NOT NULL,
+            \\    severity TEXT NOT NULL,
+            \\    file_name TEXT NOT NULL DEFAULT '',
+            \\    line_no INTEGER NOT NULL DEFAULT 0,
+            \\    excerpt TEXT NOT NULL DEFAULT '',
+            \\    message TEXT NOT NULL DEFAULT '',
+            \\    scanned_at TEXT NOT NULL
+            \\)
+        );
+
         // Create indexes
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_packages_source ON packages(source_name)") catch {};
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_packages_status ON packages(build_status)") catch {};
@@ -427,6 +505,7 @@ pub const Database = struct {
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_advisories_package ON security_advisories(package_name)") catch {};
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_advisories_severity ON security_advisories(severity)") catch {};
         self.conn.execute("CREATE INDEX IF NOT EXISTS idx_pkg_status_advisory ON security_package_status(advisory_status)") catch {};
+        self.conn.execute("CREATE INDEX IF NOT EXISTS idx_scan_findings_source ON pkgbuild_scan_findings(source_name)") catch {};
 
         // Initialize schema version if not present
         var result = try self.conn.query("SELECT version FROM schema_version LIMIT 1");
@@ -461,6 +540,9 @@ pub const Database = struct {
         if (current_version < 2) {
             try self.migrateToV2();
         }
+        if (current_version < 3) {
+            try self.migrateToV3();
+        }
     }
 
     fn migrateToV2(self: *Database) !void {
@@ -468,6 +550,18 @@ pub const Database = struct {
         // Just update the schema version
         try self.conn.execute("UPDATE schema_version SET version = 2");
         std.debug.print("Database migrated to schema version 2\n", .{});
+    }
+
+    fn migrateToV3(self: *Database) !void {
+        // trusted_keys / pkgbuild_scan_findings already created by bootstrapSchema.
+        // Existing databases need the new sources columns added. ALTER TABLE fails
+        // if the column already exists, so each is best-effort (catch + ignore).
+        self.conn.execute("ALTER TABLE sources ADD COLUMN source_hash TEXT NOT NULL DEFAULT ''") catch {};
+        self.conn.execute("ALTER TABLE sources ADD COLUMN pinned_ref TEXT NOT NULL DEFAULT ''") catch {};
+        self.conn.execute("ALTER TABLE sources ADD COLUMN resolved_commit TEXT NOT NULL DEFAULT ''") catch {};
+        self.conn.execute("ALTER TABLE sources ADD COLUMN require_signed_commit INTEGER NOT NULL DEFAULT 0") catch {};
+        try self.conn.execute("UPDATE schema_version SET version = 3");
+        std.debug.print("Database migrated to schema version 3\n", .{});
     }
 
     fn importLegacyJson(self: *Database) !void {
@@ -1232,6 +1326,289 @@ pub const Database = struct {
         }
 
         return advisories.toOwnedSlice(allocator);
+    }
+
+    // =========================================================================
+    // Trusted GPG keys (commit-signature pinning)
+    // =========================================================================
+
+    pub fn addTrustedKey(self: *Database, fingerprint: []const u8, owner: []const u8, note: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = try nowTimestamp(self.allocator);
+        defer self.allocator.free(now);
+
+        var stmt = try self.conn.prepare(
+            \\INSERT INTO trusted_keys (fingerprint, owner, note, added_at)
+            \\VALUES (?, ?, ?, ?)
+            \\ON CONFLICT(fingerprint) DO UPDATE SET
+            \\    owner = excluded.owner,
+            \\    note = excluded.note
+        );
+        defer stmt.deinit();
+        try stmt.bind(0, fingerprint);
+        try stmt.bind(1, owner);
+        try stmt.bind(2, note);
+        try stmt.bind(3, now);
+        var result = try stmt.execute();
+        result.deinit();
+    }
+
+    pub fn removeTrustedKey(self: *Database, fingerprint: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stmt = try self.conn.prepare("DELETE FROM trusted_keys WHERE fingerprint = ?");
+        defer stmt.deinit();
+        try stmt.bind(0, fingerprint);
+        var result = try stmt.execute();
+        result.deinit();
+    }
+
+    pub fn isKeyTrusted(self: *Database, fingerprint: []const u8) !bool {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stmt = try self.conn.prepare("SELECT 1 FROM trusted_keys WHERE fingerprint = ? LIMIT 1");
+        defer stmt.deinit();
+        try stmt.bind(0, fingerprint);
+        var result = try stmt.execute();
+        defer result.deinit();
+        return result.rows.items.len > 0;
+    }
+
+    pub fn getTrustedKeys(self: *Database, allocator: std.mem.Allocator) ![]TrustedKey {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try self.conn.query("SELECT fingerprint, owner, note, added_at FROM trusted_keys ORDER BY added_at");
+        defer result.deinit();
+
+        var keys: std.ArrayList(TrustedKey) = .empty;
+        errdefer {
+            for (keys.items) |k| k.deinit(allocator);
+            keys.deinit(allocator);
+        }
+
+        while (result.next()) |row| {
+            var r = row;
+            defer r.deinit();
+            try keys.append(allocator, .{
+                .fingerprint = try allocator.dupe(u8, r.getText(0) orelse ""),
+                .owner = try allocator.dupe(u8, r.getText(1) orelse ""),
+                .note = try allocator.dupe(u8, r.getText(2) orelse ""),
+                .added_at = try allocator.dupe(u8, r.getText(3) orelse ""),
+            });
+        }
+
+        return keys.toOwnedSlice(allocator);
+    }
+
+    pub fn trustedKeyCount(self: *Database) !u32 {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var result = try self.conn.query("SELECT COUNT(*) FROM trusted_keys");
+        defer result.deinit();
+        if (result.next()) |row| {
+            var r = row;
+            defer r.deinit();
+            return @intCast(r.getInt(0) orelse 0);
+        }
+        return 0;
+    }
+
+    // =========================================================================
+    // PKGBUILD scan findings
+    // =========================================================================
+
+    pub fn clearScanFindings(self: *Database, source_name: []const u8) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stmt = try self.conn.prepare("DELETE FROM pkgbuild_scan_findings WHERE source_name = ?");
+        defer stmt.deinit();
+        try stmt.bind(0, source_name);
+        var result = try stmt.execute();
+        result.deinit();
+    }
+
+    pub fn addScanFinding(
+        self: *Database,
+        source_name: []const u8,
+        rule_id: []const u8,
+        severity: []const u8,
+        file_name: []const u8,
+        line_no: u32,
+        excerpt: []const u8,
+        message: []const u8,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        const now = try nowTimestamp(self.allocator);
+        defer self.allocator.free(now);
+
+        var stmt = try self.conn.prepare(
+            \\INSERT INTO pkgbuild_scan_findings
+            \\    (source_name, rule_id, severity, file_name, line_no, excerpt, message, scanned_at)
+            \\VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        );
+        defer stmt.deinit();
+        try stmt.bind(0, source_name);
+        try stmt.bind(1, rule_id);
+        try stmt.bind(2, severity);
+        try stmt.bind(3, file_name);
+        try stmt.bind(4, @as(i64, @intCast(line_no)));
+        try stmt.bind(5, excerpt);
+        try stmt.bind(6, message);
+        try stmt.bind(7, now);
+        var result = try stmt.execute();
+        result.deinit();
+    }
+
+    pub fn getScanFindings(self: *Database, allocator: std.mem.Allocator, source_name: []const u8) ![]ScanFinding {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stmt = try self.conn.prepare(
+            \\SELECT source_name, rule_id, severity, file_name, line_no, excerpt, message, scanned_at
+            \\FROM pkgbuild_scan_findings WHERE source_name = ? ORDER BY id
+        );
+        defer stmt.deinit();
+        try stmt.bind(0, source_name);
+        var result = try stmt.execute();
+        defer result.deinit();
+
+        var findings: std.ArrayList(ScanFinding) = .empty;
+        errdefer {
+            for (findings.items) |f| f.deinit(allocator);
+            findings.deinit(allocator);
+        }
+
+        for (result.rows.items) |row| {
+            try findings.append(allocator, .{
+                .source_name = try allocator.dupe(u8, valueToText(row.values[0])),
+                .rule_id = try allocator.dupe(u8, valueToText(row.values[1])),
+                .severity = try allocator.dupe(u8, valueToText(row.values[2])),
+                .file_name = try allocator.dupe(u8, valueToText(row.values[3])),
+                .line_no = @intCast(valueToInt(row.values[4])),
+                .excerpt = try allocator.dupe(u8, valueToText(row.values[5])),
+                .message = try allocator.dupe(u8, valueToText(row.values[6])),
+                .scanned_at = try allocator.dupe(u8, valueToText(row.values[7])),
+            });
+        }
+
+        return findings.toOwnedSlice(allocator);
+    }
+
+    /// All persisted scan findings across every source, newest source first.
+    pub fn getAllScanFindings(self: *Database, allocator: std.mem.Allocator) ![]ScanFinding {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stmt = try self.conn.prepare(
+            \\SELECT source_name, rule_id, severity, file_name, line_no, excerpt, message, scanned_at
+            \\FROM pkgbuild_scan_findings ORDER BY id DESC
+        );
+        defer stmt.deinit();
+        var result = try stmt.execute();
+        defer result.deinit();
+
+        var findings: std.ArrayList(ScanFinding) = .empty;
+        errdefer {
+            for (findings.items) |f| f.deinit(allocator);
+            findings.deinit(allocator);
+        }
+
+        for (result.rows.items) |row| {
+            try findings.append(allocator, .{
+                .source_name = try allocator.dupe(u8, valueToText(row.values[0])),
+                .rule_id = try allocator.dupe(u8, valueToText(row.values[1])),
+                .severity = try allocator.dupe(u8, valueToText(row.values[2])),
+                .file_name = try allocator.dupe(u8, valueToText(row.values[3])),
+                .line_no = @intCast(valueToInt(row.values[4])),
+                .excerpt = try allocator.dupe(u8, valueToText(row.values[5])),
+                .message = try allocator.dupe(u8, valueToText(row.values[6])),
+                .scanned_at = try allocator.dupe(u8, valueToText(row.values[7])),
+            });
+        }
+
+        return findings.toOwnedSlice(allocator);
+    }
+
+    // =========================================================================
+    // Source pinning / integrity metadata
+    // =========================================================================
+
+    pub fn setSourcePin(
+        self: *Database,
+        source_name: []const u8,
+        source_hash: ?[]const u8,
+        pinned_ref: ?[]const u8,
+        resolved_commit: ?[]const u8,
+        require_signed_commit: ?bool,
+    ) !void {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        // Update only the provided fields, leaving others untouched.
+        if (source_hash) |v| {
+            var stmt = try self.conn.prepare("UPDATE sources SET source_hash = ? WHERE name = ?");
+            defer stmt.deinit();
+            try stmt.bind(0, v);
+            try stmt.bind(1, source_name);
+            var r = try stmt.execute();
+            r.deinit();
+        }
+        if (pinned_ref) |v| {
+            var stmt = try self.conn.prepare("UPDATE sources SET pinned_ref = ? WHERE name = ?");
+            defer stmt.deinit();
+            try stmt.bind(0, v);
+            try stmt.bind(1, source_name);
+            var r = try stmt.execute();
+            r.deinit();
+        }
+        if (resolved_commit) |v| {
+            var stmt = try self.conn.prepare("UPDATE sources SET resolved_commit = ? WHERE name = ?");
+            defer stmt.deinit();
+            try stmt.bind(0, v);
+            try stmt.bind(1, source_name);
+            var r = try stmt.execute();
+            r.deinit();
+        }
+        if (require_signed_commit) |v| {
+            var stmt = try self.conn.prepare("UPDATE sources SET require_signed_commit = ? WHERE name = ?");
+            defer stmt.deinit();
+            try stmt.bind(0, @as(i64, if (v) 1 else 0));
+            try stmt.bind(1, source_name);
+            var r = try stmt.execute();
+            r.deinit();
+        }
+    }
+
+    pub fn getSourcePin(self: *Database, allocator: std.mem.Allocator, source_name: []const u8) !?SourcePin {
+        self.mutex.lock();
+        defer self.mutex.unlock();
+
+        var stmt = try self.conn.prepare(
+            \\SELECT source_hash, pinned_ref, resolved_commit, require_signed_commit
+            \\FROM sources WHERE name = ?
+        );
+        defer stmt.deinit();
+        try stmt.bind(0, source_name);
+        var result = try stmt.execute();
+        defer result.deinit();
+
+        if (result.rows.items.len == 0) return null;
+        const row = result.rows.items[0];
+        return SourcePin{
+            .source_hash = try allocator.dupe(u8, valueToText(row.values[0])),
+            .pinned_ref = try allocator.dupe(u8, valueToText(row.values[1])),
+            .resolved_commit = try allocator.dupe(u8, valueToText(row.values[2])),
+            .require_signed_commit = valueToInt(row.values[3]) != 0,
+        };
     }
 
     pub fn getAdvisoryCount(self: *Database) !u32 {

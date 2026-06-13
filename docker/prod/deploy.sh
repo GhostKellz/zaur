@@ -16,8 +16,8 @@ case "${1:-up}" in
             echo "ZAUR is running at http://localhost:9004"
             echo ""
             echo "Next steps:"
-            echo "  1. Configure nginx (see nginx.conf.example)"
-            echo "  2. Add to client pacman.conf (see pacman.conf.example)"
+            echo "  1. Configure nginx (see zaur.conf)"
+            echo "  2. Add to client pacman.conf (see pacman.conf)"
         else
             echo "Failed to start. Check: docker compose logs"
             exit 1

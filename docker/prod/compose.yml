@@ -2,7 +2,7 @@ services:
   zaur:
     build:
       context: ../..
-      dockerfile: docker/deploy/Dockerfile
+      dockerfile: docker/prod/Dockerfile
     container_name: zaur
     ports:
       - "127.0.0.1:9004:9004"

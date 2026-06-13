@@ -12,8 +12,9 @@
   <img src="https://img.shields.io/badge/Zig-F7A41D?style=for-the-badge&logo=zig&logoColor=white" alt="Zig">
   <img src="https://img.shields.io/badge/Arch_Linux-1793D1?style=for-the-badge&logo=arch-linux&logoColor=white" alt="Arch Linux">
   <img src="https://img.shields.io/badge/AUR-1793D1?style=for-the-badge&logo=arch-linux&logoColor=white" alt="AUR">
-  <img src="https://img.shields.io/badge/SQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="SQLite">
+  <img src="https://img.shields.io/badge/ZQLite-003B57?style=for-the-badge&logo=sqlite&logoColor=white" alt="ZQLite">
   <img src="https://img.shields.io/badge/HTTP_Server-4CAF50?style=for-the-badge&logo=fastapi&logoColor=white" alt="HTTP Server">
+  <img src="https://img.shields.io/badge/Supply_Chain_Security-2E7D32?style=for-the-badge&logo=letsencrypt&logoColor=white" alt="Supply-Chain Security">
 </p>
 
 ---

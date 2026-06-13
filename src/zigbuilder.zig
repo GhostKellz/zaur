@@ -65,8 +65,19 @@ pub const ZigBuilder = struct {
         return try self.parseZigZon(content);
     }
 
+    /// Compute the `sha256sums=()` value for a generated source tarball by
+    /// downloading and hashing it. Falls back to "SKIP" if the source can't be
+    /// fetched, so generation never silently fails. Caller owns the result.
+    fn sourceChecksum(self: *ZigBuilder, source_url: []const u8) []const u8 {
+        const integrity = @import("integrity.zig");
+        return integrity.sha256Url(self.allocator, self.threaded_io.io(), source_url) catch
+            (self.allocator.dupe(u8, "SKIP") catch "SKIP");
+    }
+
     /// Generates PKGBUILD for a Zig project
     pub fn generatePKGBUILD(self: *ZigBuilder, project_info: ZigProjectInfo, source_url: []const u8) ![]const u8 {
+        const checksum = self.sourceChecksum(source_url);
+        defer self.allocator.free(checksum);
         var targets_str: std.ArrayList(u8) = .empty;
         defer targets_str.deinit(self.allocator);
 
@@ -91,7 +102,7 @@ pub const ZigBuilder = struct {
             \\license=('MIT' 'Apache' 'GPL' 'BSD')
             \\makedepends=('zig>=0.13.0')
             \\source=("$pkgname-$pkgver.tar.gz::{s}")
-            \\sha256sums=('SKIP')
+            \\sha256sums=('{s}')
             \\
             \\build() {{
             \\    cd "$srcdir"/*
@@ -141,6 +152,7 @@ pub const ZigBuilder = struct {
             project_info.description,
             source_url,
             source_url,
+            checksum,
             install_commands,
         });
 
@@ -190,13 +202,10 @@ pub const ZigBuilder = struct {
         // Compile each C file with Zig's C compiler (generic baseline for reproducibility)
         for (c_files) |c_file| {
             const args = [_][]const u8{
-                "zig", "cc",
-                "-O3",
-                "-fPIC",
-                "-std=c99",
-                c_file,
-                "-o",
-                try std.fmt.allocPrint(allocator, "{s}.o", .{c_file[0 .. c_file.len - 2]}),
+                "zig",      "cc",
+                "-O3",      "-fPIC",
+                "-std=c99", c_file,
+                "-o",       try std.fmt.allocPrint(allocator, "{s}.o", .{c_file[0 .. c_file.len - 2]}),
             };
 
             const result = try std.process.run(allocator, io, .{
@@ -224,6 +233,8 @@ pub const ZigBuilder = struct {
 
     /// Creates a hybrid PKGBUILD for projects with both Zig and C code
     pub fn generateHybridPKGBUILD(self: *ZigBuilder, project_info: ZigProjectInfo, source_url: []const u8) ![]const u8 {
+        const checksum = self.sourceChecksum(source_url);
+        defer self.allocator.free(checksum);
         const pkgbuild = try std.fmt.allocPrint(self.allocator,
             \\# Maintainer: ZAUR (Zig Arch User Repository)
             \\# Hybrid Zig/C project - leveraging Zig as superior C compiler
@@ -237,11 +248,11 @@ pub const ZigBuilder = struct {
             \\license=('MIT')
             \\makedepends=('zig>=0.13.0')
             \\source=("$pkgname-$pkgver.tar.gz::{s}")
-            \\sha256sums=('SKIP')
+            \\sha256sums=('{s}')
             \\
             \\build() {{
             \\    cd "$srcdir"/*
-            \\    
+            \\
             \\    # Build Zig components first
             \\    if [ -f build.zig ]; then
             \\        echo "Building Zig components..."
@@ -283,6 +294,7 @@ pub const ZigBuilder = struct {
             project_info.description,
             source_url,
             source_url,
+            checksum,
             project_info.name,
             project_info.name,
             project_info.name,

@@ -1,7 +1,7 @@
 # Build stage
 FROM archlinux:latest AS builder
 
-# Install latest Zig 0.16-dev (required for this codebase)
+# Install the latest Zig dev toolchain (master) required by this codebase
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm curl xz jq && \
     ZIG_URL=$(curl -s https://ziglang.org/download/index.json | jq -r '.master."x86_64-linux".tarball') && \
@@ -25,6 +25,7 @@ RUN pacman -Syu --noconfirm && \
     git \
     curl \
     pacman-contrib \
+    gnupg \
     && pacman -Scc --noconfirm && \
     useradd -m -s /bin/bash zaur && \
     mkdir -p /var/lib/zaur && \

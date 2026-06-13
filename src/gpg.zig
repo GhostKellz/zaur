@@ -122,7 +122,112 @@ pub const GpgSigner = struct {
             return error.GpgListKeysFailed;
         }
     }
+
+    /// Detached-sign the published repository database so clients can verify it
+    /// (`<repo>.db.sig`). Reuses the same key + agent flow as `signPackage`.
+    pub fn signRepoDb(self: *GpgSigner, db_path: []const u8) !void {
+        try self.signPackage(db_path);
+    }
+
+    /// Verify the GPG signature on a git commit. Runs
+    /// `git -C <repo_dir> verify-commit --raw <ref>` and parses the machine-
+    /// readable status from stderr. The caller owns `result.fingerprint`.
+    pub fn verifyGitCommit(self: *GpgSigner, repo_dir: []const u8, ref: []const u8) !CommitVerification {
+        const result = try std.process.run(self.allocator, self.threaded_io.io(), .{
+            .argv = &.{ "git", "-C", repo_dir, "verify-commit", "--raw", ref },
+        });
+        defer self.allocator.free(result.stdout);
+        defer self.allocator.free(result.stderr);
+
+        // git relays gpg's `[GNUPG:] ...` status lines on stderr.
+        const status = parseGpgStatus(result.stderr);
+        const fingerprint = if (extractValidSigFingerprint(result.stderr)) |fpr|
+            try self.allocator.dupe(u8, fpr)
+        else
+            null;
+
+        const signed = status == .good or status == .good_untrusted or status == .expired_key;
+        return CommitVerification{
+            .signed = signed,
+            .status = status,
+            .fingerprint = fingerprint,
+        };
+    }
 };
+
+pub const CommitStatus = enum {
+    /// No signature present on the commit.
+    unsigned,
+    /// Valid signature from a key gpg already trusts.
+    good,
+    /// Valid signature, but the signing key is not in gpg's web-of-trust.
+    good_untrusted,
+    /// Signature present but cryptographically bad.
+    bad,
+    /// Otherwise-valid signature from an expired key.
+    expired_key,
+
+    pub fn asString(self: CommitStatus) []const u8 {
+        return switch (self) {
+            .unsigned => "unsigned",
+            .good => "good",
+            .good_untrusted => "good-untrusted",
+            .bad => "bad",
+            .expired_key => "expired-key",
+        };
+    }
+};
+
+pub const CommitVerification = struct {
+    signed: bool,
+    status: CommitStatus,
+    /// 40-char primary-key fingerprint of the signer, if a valid signature was
+    /// found. Owned by the caller.
+    fingerprint: ?[]const u8,
+
+    pub fn deinit(self: CommitVerification, allocator: std.mem.Allocator) void {
+        if (self.fingerprint) |fpr| allocator.free(fpr);
+    }
+};
+
+/// Map gpg `[GNUPG:]` status lines to a CommitStatus. Precedence favours the
+/// most security-relevant outcome (bad signature beats a good one).
+fn parseGpgStatus(stderr: []const u8) CommitStatus {
+    if (std.mem.indexOf(u8, stderr, "[GNUPG:] BADSIG") != null) return .bad;
+    if (std.mem.indexOf(u8, stderr, "[GNUPG:] ERRSIG") != null) return .bad;
+    if (std.mem.indexOf(u8, stderr, "[GNUPG:] EXPKEYSIG") != null) return .expired_key;
+    if (std.mem.indexOf(u8, stderr, "[GNUPG:] GOODSIG") != null or
+        std.mem.indexOf(u8, stderr, "[GNUPG:] VALIDSIG") != null)
+    {
+        // TRUST_ULTIMATE/TRUST_FULLY means gpg trusts the key directly.
+        if (std.mem.indexOf(u8, stderr, "[GNUPG:] TRUST_ULTIMATE") != null or
+            std.mem.indexOf(u8, stderr, "[GNUPG:] TRUST_FULLY") != null)
+            return .good;
+        return .good_untrusted;
+    }
+    return .unsigned;
+}
+
+/// Extract the primary-key fingerprint from a `[GNUPG:] VALIDSIG` status line.
+/// The VALIDSIG format places the primary-key fingerprint as the final field;
+/// we conservatively return the first 40-char hex token on the line.
+fn extractValidSigFingerprint(stderr: []const u8) ?[]const u8 {
+    const marker = "[GNUPG:] VALIDSIG ";
+    const start = std.mem.indexOf(u8, stderr, marker) orelse return null;
+    const rest = stderr[start + marker.len ..];
+    var it = std.mem.tokenizeAny(u8, rest, " \t\r\n");
+    while (it.next()) |tok| {
+        if (tok.len == 40 and isHex(tok)) return tok;
+    }
+    return null;
+}
+
+fn isHex(s: []const u8) bool {
+    for (s) |c| {
+        if (!std.ascii.isHex(c)) return false;
+    }
+    return true;
+}
 
 fn createSecureBatchFile(allocator: std.mem.Allocator, io: std.Io, content: []const u8) ![]const u8 {
     var random_bytes: [16]u8 = undefined;

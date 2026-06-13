@@ -1,6 +1,10 @@
 FROM archlinux:latest
 
 # Update system and install dependencies
+#   base-devel/git/pacman-contrib - build + repo tooling
+#   curl/jq                       - API integration tests
+#   valgrind                      - memory leak auditing (test-memory.sh)
+#   gnupg                         - signed-commit / key-pinning tests (test-security.sh)
 RUN pacman -Syu --noconfirm && \
     pacman -S --noconfirm \
     base-devel \
@@ -8,6 +12,8 @@ RUN pacman -Syu --noconfirm && \
     pacman-contrib \
     curl \
     jq \
+    valgrind \
+    gnupg \
     && pacman -Scc --noconfirm
 
 # Create test user (makepkg won't run as root)

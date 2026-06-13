@@ -17,8 +17,20 @@ ZAUR uses environment variables for configuration. All variables have sensible d
 | `ZAUR_BIND` | `127.0.0.1` | HTTP server bind address |
 | `ZAUR_PORT` | `9004` | HTTP server port |
 | `ZAUR_API_TOKEN` | (none) | API authentication token for protected endpoints |
-| `ZAUR_GPG_KEY` | (none) | GPG key ID for signing packages |
+| `ZAUR_GPG_KEY` | (none) | GPG key ID for signing packages and repo databases |
 | `ZAUR_CORS_ORIGIN` | (none) | CORS origin header (omit for no CORS headers) |
+
+### Security Hardening
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ZAUR_SCAN_POLICY` | `warn` | PKGBUILD static-analysis gate: `off`, `warn` (log only), or `enforce` (block builds on critical/high findings) |
+| `ZAUR_CHECKSUM_PINNING` | `true` | Embed computed `sha256sums` in generated PKGBUILDs and record resolved git commits |
+| `ZAUR_REQUIRE_SIGNED_COMMITS` | `false` | Require git sources to have a signed HEAD commit from a trusted key |
+| `ZAUR_BUILD_ISOLATION` | `none` | Build backend: `none`, `chroot` (devtools `makechrootpkg`), or `container` |
+| `ZAUR_CONTAINER_RUNTIME` | `podman` | Container runtime when isolation is `container` (`podman` or `docker`) |
+| `ZAUR_CONTAINER_IMAGE` | `archlinux:base-devel` | Container image used for `container` isolation |
+| `ZAUR_CHROOT_DIR` | `$ZAUR_DATA_ROOT/chroot` | Chroot location used for `chroot` isolation |
 
 ## External Tool Dependencies
 
@@ -88,6 +100,11 @@ When `ZAUR_API_TOKEN` is set, the following endpoints require the `Authorization
 - `POST /api/builds`
 - `POST /api/repos/publish`
 - `POST /api/mirror/sync`
+- `POST /api/security/scan-pkgbuild`
+- `GET /api/security/keys`
+- `POST /api/security/keys`
+- `DELETE /api/security/keys`
+- `POST /api/security/pin`
 
 Public endpoints (no auth required):
 - `GET /api/health`
@@ -97,6 +114,7 @@ Public endpoints (no auth required):
 - `GET /api/builds`
 - `GET /api/repos`
 - `GET /api/mirror`
+- `GET /api/security/findings`
 - All repository file serving (`/aur/*`, `/custom/*`, `/mirror/*`)
 
 ## API Request Requirements

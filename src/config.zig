@@ -17,6 +17,48 @@ pub const MirrorPolicy = enum {
     }
 };
 
+/// How makepkg is executed for a build.
+pub const BuildIsolation = enum {
+    none, // Run makepkg directly in the build dir (default)
+    chroot, // Arch-native clean chroot via devtools (makechrootpkg)
+    container, // makepkg inside an archlinux container (podman/docker)
+
+    pub fn fromString(s: []const u8) BuildIsolation {
+        if (std.mem.eql(u8, s, "chroot")) return .chroot;
+        if (std.mem.eql(u8, s, "container")) return .container;
+        return .none;
+    }
+
+    pub fn toString(self: BuildIsolation) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .chroot => "chroot",
+            .container => "container",
+        };
+    }
+};
+
+/// What the PKGBUILD/source static analyzer does on findings.
+pub const ScanPolicy = enum {
+    off, // Skip scanning entirely
+    warn, // Record + log findings but allow the build (default)
+    enforce, // Block the build on critical/high findings
+
+    pub fn fromString(s: []const u8) ScanPolicy {
+        if (std.mem.eql(u8, s, "off")) return .off;
+        if (std.mem.eql(u8, s, "enforce")) return .enforce;
+        return .warn;
+    }
+
+    pub fn toString(self: ScanPolicy) []const u8 {
+        return switch (self) {
+            .off => "off",
+            .warn => "warn",
+            .enforce => "enforce",
+        };
+    }
+};
+
 pub const Config = struct {
     data_root: []const u8,
     repo_root: []const u8,
@@ -36,6 +78,15 @@ pub const Config = struct {
     // Security settings
     security_stale_days: u32,
     security_require_signatures: bool,
+    // Supply-chain hardening
+    scan_policy: ScanPolicy,
+    require_signed_commits: bool,
+    checksum_pinning: bool,
+    // Build isolation
+    build_isolation: BuildIsolation,
+    container_runtime: []const u8,
+    container_image: []const u8,
+    chroot_dir: []const u8,
     // Mirror settings
     mirror_upstream: []const u8,
     mirror_policy: MirrorPolicy,
@@ -128,6 +179,25 @@ pub const Config = struct {
         const security_stale_days = try envOrDefaultU32(environ_map, "ZAUR_SECURITY_STALE_DAYS", 30);
         const security_require_signatures = envOrDefaultBool(environ_map, "ZAUR_SECURITY_REQUIRE_SIGNATURES", false);
 
+        // Supply-chain hardening
+        const scan_policy = ScanPolicy.fromString(environ_map.get("ZAUR_SCAN_POLICY") orelse "warn");
+        const require_signed_commits = envOrDefaultBool(environ_map, "ZAUR_REQUIRE_SIGNED_COMMITS", false);
+        const checksum_pinning = envOrDefaultBool(environ_map, "ZAUR_CHECKSUM_PINNING", true);
+
+        // Build isolation
+        const build_isolation = BuildIsolation.fromString(environ_map.get("ZAUR_BUILD_ISOLATION") orelse "none");
+        const container_runtime = try envOrDefaultAlloc(allocator, environ_map, "ZAUR_CONTAINER_RUNTIME", "podman");
+        errdefer allocator.free(container_runtime);
+        const container_image = try envOrDefaultAlloc(allocator, environ_map, "ZAUR_CONTAINER_IMAGE", "archlinux:base-devel");
+        errdefer allocator.free(container_image);
+
+        const chroot_dir_default = try std.fs.path.join(allocator, &.{ data_root, "chroot" });
+        defer allocator.free(chroot_dir_default);
+        const chroot_dir_value = try envOrDefaultAlloc(allocator, environ_map, "ZAUR_CHROOT_DIR", chroot_dir_default);
+        defer allocator.free(chroot_dir_value);
+        const chroot_dir = try absolutizePath(allocator, cwd, chroot_dir_value);
+        errdefer allocator.free(chroot_dir);
+
         // Mirror settings
         const mirror_upstream = try envOrDefaultAlloc(allocator, environ_map, "ZAUR_MIRROR_UPSTREAM", "https://mirrors.kernel.org/archlinux");
         errdefer allocator.free(mirror_upstream);
@@ -153,6 +223,13 @@ pub const Config = struct {
             .cors_origin = cors_origin,
             .security_stale_days = security_stale_days,
             .security_require_signatures = security_require_signatures,
+            .scan_policy = scan_policy,
+            .require_signed_commits = require_signed_commits,
+            .checksum_pinning = checksum_pinning,
+            .build_isolation = build_isolation,
+            .container_runtime = container_runtime,
+            .container_image = container_image,
+            .chroot_dir = chroot_dir,
             .mirror_upstream = mirror_upstream,
             .mirror_policy = mirror_policy,
             .allocator = allocator,
@@ -174,6 +251,9 @@ pub const Config = struct {
         if (self.api_token) |t| self.allocator.free(t);
         if (self.gpg_key_id) |k| self.allocator.free(k);
         if (self.cors_origin) |origin| self.allocator.free(origin);
+        self.allocator.free(self.container_runtime);
+        self.allocator.free(self.container_image);
+        self.allocator.free(self.chroot_dir);
         self.allocator.free(self.mirror_upstream);
     }
 
@@ -269,4 +349,39 @@ fn envOrDefaultBool(environ_map: *const std.process.Environ.Map, key: []const u8
 fn absolutizePath(allocator: std.mem.Allocator, cwd: []const u8, value: []const u8) ![]const u8 {
     if (std.fs.path.isAbsolute(value)) return allocator.dupe(u8, value);
     return std.fs.path.resolve(allocator, &.{ cwd, value });
+}
+
+test "BuildIsolation.fromString parses known values and defaults to none" {
+    const testing = std.testing;
+    try testing.expectEqual(BuildIsolation.chroot, BuildIsolation.fromString("chroot"));
+    try testing.expectEqual(BuildIsolation.container, BuildIsolation.fromString("container"));
+    try testing.expectEqual(BuildIsolation.none, BuildIsolation.fromString("none"));
+    try testing.expectEqual(BuildIsolation.none, BuildIsolation.fromString("bogus"));
+    // round-trip through toString
+    try testing.expectEqualStrings("chroot", BuildIsolation.chroot.toString());
+    try testing.expectEqualStrings("container", BuildIsolation.container.toString());
+    try testing.expectEqualStrings("none", BuildIsolation.none.toString());
+}
+
+test "ScanPolicy.fromString parses known values and defaults to warn" {
+    const testing = std.testing;
+    try testing.expectEqual(ScanPolicy.off, ScanPolicy.fromString("off"));
+    try testing.expectEqual(ScanPolicy.enforce, ScanPolicy.fromString("enforce"));
+    try testing.expectEqual(ScanPolicy.warn, ScanPolicy.fromString("warn"));
+    try testing.expectEqual(ScanPolicy.warn, ScanPolicy.fromString("nonsense"));
+    try testing.expectEqualStrings("off", ScanPolicy.off.toString());
+    try testing.expectEqualStrings("warn", ScanPolicy.warn.toString());
+    try testing.expectEqualStrings("enforce", ScanPolicy.enforce.toString());
+}
+
+test "envOrDefaultBool honors truthy/falsy strings and default" {
+    const testing = std.testing;
+    var map: std.process.Environ.Map = .init(testing.allocator);
+    defer map.deinit();
+    try map.put("ZAUR_T", "true");
+    try map.put("ZAUR_F", "0");
+    try testing.expect(envOrDefaultBool(&map, "ZAUR_T", false));
+    try testing.expect(!envOrDefaultBool(&map, "ZAUR_F", true));
+    try testing.expect(envOrDefaultBool(&map, "ZAUR_MISSING", true));
+    try testing.expect(!envOrDefaultBool(&map, "ZAUR_MISSING", false));
 }

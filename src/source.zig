@@ -116,6 +116,7 @@ pub fn addSource(allocator: std.mem.Allocator, config: Config, db: *Database, sp
 
             try db.upsertSource(aur_spec.package_name, .aur, package.?.url_path, "", "aur");
             try db.addPackageFromSource(aur_spec.package_name, aur_spec.package_name, "aur");
+            recordResolvedCommit(allocator, io, db, aur_spec.package_name, checkout_dir);
             return allocator.dupe(u8, aur_spec.package_name);
         },
         .git => |git_spec| {
@@ -158,6 +159,7 @@ pub fn addSource(allocator: std.mem.Allocator, config: Config, db: *Database, sp
 
             try db.upsertSource(name, .git, git_spec.repo_spec, "", "custom");
             try db.addPackageFromSource(name, name, "custom");
+            recordResolvedCommit(allocator, io, db, name, checkout_dir);
             return allocator.dupe(u8, name);
         },
         .local => |local_spec| {
@@ -199,6 +201,22 @@ pub fn addSource(allocator: std.mem.Allocator, config: Config, db: *Database, sp
             return allocator.dupe(u8, local_spec.package_name);
         },
     }
+}
+
+/// Best-effort: record the cloned checkout's HEAD commit so updates can detect
+/// drift and pins have a baseline. Non-git checkouts (or rev-parse failures)
+/// are silently ignored — this is integrity metadata, not a hard requirement.
+fn recordResolvedCommit(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *Database,
+    source_name: []const u8,
+    checkout_dir: []const u8,
+) void {
+    const integrity = @import("integrity.zig");
+    const commit = integrity.resolveGitHead(allocator, io, checkout_dir) catch return;
+    defer allocator.free(commit);
+    db.setSourcePin(source_name, null, null, commit, null) catch {};
 }
 
 pub fn resetDirectory(path: []const u8) !void {
@@ -298,8 +316,12 @@ test "validateSourceName rejects names starting with dot" {
 }
 
 test "validateSourceName rejects names longer than 128 chars" {
-    const long_name = "a" ** 129;
-    try std.testing.expectError(error.InvalidSourceName, validateSourceName(long_name));
+    const long_name = comptime blk: {
+        var buf: [129]u8 = undefined;
+        @memset(&buf, 'a');
+        break :blk buf;
+    };
+    try std.testing.expectError(error.InvalidSourceName, validateSourceName(&long_name));
 }
 
 test "validateSourceName rejects invalid characters" {
@@ -320,8 +342,12 @@ test "validateSourceName accepts valid names" {
 }
 
 test "validateSourceName accepts max length name" {
-    const max_name = "a" ** 128;
-    try validateSourceName(max_name);
+    const max_name = comptime blk: {
+        var buf: [128]u8 = undefined;
+        @memset(&buf, 'a');
+        break :blk buf;
+    };
+    try validateSourceName(&max_name);
 }
 
 // =============================================================================
@@ -486,7 +512,42 @@ pub fn updateSource(allocator: std.mem.Allocator, config: Config, db: *Database,
     std.Io.Dir.deleteTree(.cwd(), io, temp_dir) catch {};
     std.Io.Dir.deleteTree(.cwd(), io, backup_dir) catch {};
 
+    // Integrity: reconcile the new checkout against any recorded pin/commit.
+    reconcileCommit(allocator, io, db, source.name, checkout_dir);
+
     std.debug.print("Updated source: {s}\n", .{source.name});
+}
+
+/// After an update swap, reconcile the freshly fetched checkout with its
+/// integrity metadata:
+///   * If a `pinned_ref` is set, force the checkout back to that ref so an
+///     update can never silently advance past the pinned point.
+///   * Otherwise, log any commit drift (old → new) and record the new HEAD.
+/// All steps are best-effort; failures never abort an otherwise good update.
+fn reconcileCommit(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    db: *Database,
+    source_name: []const u8,
+    checkout_dir: []const u8,
+) void {
+    const integrity = @import("integrity.zig");
+    const pin = (db.getSourcePin(allocator, source_name) catch return) orelse return;
+    defer pin.deinit(allocator);
+
+    if (pin.pinned_ref.len > 0) {
+        integrity.checkoutRef(allocator, io, checkout_dir, pin.pinned_ref) catch {
+            std.debug.print("Warning: failed to restore pinned ref {s} for {s}\n", .{ pin.pinned_ref, source_name });
+        };
+    }
+
+    const new_commit = integrity.resolveGitHead(allocator, io, checkout_dir) catch return;
+    defer allocator.free(new_commit);
+
+    if (pin.resolved_commit.len > 0 and !std.mem.eql(u8, pin.resolved_commit, new_commit)) {
+        std.debug.print("Source {s} advanced: {s} -> {s}\n", .{ source_name, pin.resolved_commit, new_commit });
+    }
+    db.setSourcePin(source_name, null, null, new_commit, null) catch {};
 }
 
 pub fn updateAllSources(allocator: std.mem.Allocator, config: Config, db: *Database) !void {

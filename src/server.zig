@@ -8,6 +8,9 @@ const RepoManager = @import("repo.zig").RepoManager;
 const ArchMirror = @import("mirror.zig").ArchMirror;
 const PackageBuilder = @import("builder.zig").PackageBuilder;
 const SecurityManager = @import("security.zig").SecurityManager;
+const Scanner = @import("scanner.zig");
+const Integrity = @import("integrity.zig");
+const GpgSigner = @import("gpg.zig").GpgSigner;
 
 const Route = struct {
     method: std.http.Method,
@@ -35,6 +38,12 @@ const routes = [_]Route{
     .{ .method = .GET, .path = "/api/security/advisories", .handler = apiSecurityAdvisories, .auth_required = false },
     .{ .method = .POST, .path = "/api/security/sync", .handler = apiSecuritySync, .auth_required = true },
     .{ .method = .POST, .path = "/api/security/scan", .handler = apiSecurityScan, .auth_required = true },
+    .{ .method = .GET, .path = "/api/security/findings", .handler = apiSecurityFindings, .auth_required = false },
+    .{ .method = .POST, .path = "/api/security/scan-pkgbuild", .handler = apiSecurityScanPkgbuild, .auth_required = true },
+    .{ .method = .GET, .path = "/api/security/keys", .handler = apiSecurityListKeys, .auth_required = true },
+    .{ .method = .POST, .path = "/api/security/keys", .handler = apiSecurityAddKey, .auth_required = true },
+    .{ .method = .DELETE, .path = "/api/security/keys", .handler = apiSecurityRemoveKey, .auth_required = true },
+    .{ .method = .POST, .path = "/api/security/pin", .handler = apiSecurityPin, .auth_required = true },
 };
 
 pub const HttpServer = struct {
@@ -876,7 +885,7 @@ fn buildPackage(allocator: std.mem.Allocator, db: *Database, config: *const Conf
     const source = try db.getSource(allocator, package_name) orelse return error.SourceNotFound;
     defer source.deinit(allocator);
 
-    var builder = PackageBuilder.init(allocator, config.source_root, config.build_root, config.repoDirForName(repo_name), config);
+    var builder = PackageBuilder.init(allocator, config.source_root, config.build_root, config.repoDirForName(repo_name), config, db);
     defer builder.deinit();
     const result = try builder.buildPackage(package_name);
     defer result.deinit(allocator);
@@ -901,6 +910,7 @@ fn apiPublishRepo(self: *HttpServer, request: *std.http.Server.Request, _: std.I
         const msg = std.fmt.bufPrint(&buf, "aur repo failed: {}", .{err}) catch "aur repo failed";
         return self.jsonErrorWithCors(request, .internal_server_error, msg);
     };
+    aur_repo.signDatabase(config);
 
     var custom_repo = RepoManager.init(self.allocator, config.custom_repo_dir, "custom");
     defer custom_repo.deinit();
@@ -909,6 +919,7 @@ fn apiPublishRepo(self: *HttpServer, request: *std.http.Server.Request, _: std.I
         const msg = std.fmt.bufPrint(&buf, "custom repo failed: {}", .{err}) catch "custom repo failed";
         return self.jsonErrorWithCors(request, .internal_server_error, msg);
     };
+    custom_repo.signDatabase(config);
 
     return self.respondWithCors(request, .ok, "application/json", "{\"success\":true,\"repos\":[\"aur\",\"custom\"]}");
 }
@@ -1172,6 +1183,208 @@ fn apiSecurityScan(self: *HttpServer, request: *std.http.Server.Request, _: std.
         result.unsigned,
     }) catch "{\"success\":true}";
     return self.respondWithCors(request, .ok, "application/json", json);
+}
+
+// GET /api/security/findings - all persisted PKGBUILD scan findings
+fn apiSecurityFindings(self: *HttpServer, request: *std.http.Server.Request, _: std.Io) !void {
+    const db = self.database orelse return self.jsonErrorWithCors(request, .internal_server_error, "no database");
+
+    const findings = try db.getAllScanFindings(self.allocator);
+    defer {
+        for (findings) |f| f.deinit(self.allocator);
+        self.allocator.free(findings);
+    }
+
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(self.allocator);
+    try json.appendSlice(self.allocator, "{\"findings\":[");
+
+    for (findings, 0..) |f, i| {
+        if (i > 0) try json.appendSlice(self.allocator, ",");
+        const src = try jsonEscape(self.allocator, f.source_name);
+        defer self.allocator.free(src);
+        const file = try jsonEscape(self.allocator, f.file_name);
+        defer self.allocator.free(file);
+        const rule = try jsonEscape(self.allocator, f.rule_id);
+        defer self.allocator.free(rule);
+        const sev = try jsonEscape(self.allocator, f.severity);
+        defer self.allocator.free(sev);
+        const msg = try jsonEscape(self.allocator, f.message);
+        defer self.allocator.free(msg);
+        const exc = try jsonEscape(self.allocator, f.excerpt);
+        defer self.allocator.free(exc);
+
+        var buf: [1024]u8 = undefined;
+        const entry = std.fmt.bufPrint(&buf, "{{\"source\":\"{s}\",\"rule\":\"{s}\",\"severity\":\"{s}\",\"file\":\"{s}\",\"line\":{d},\"message\":\"{s}\",\"excerpt\":\"{s}\"}}", .{
+            src, rule, sev, file, f.line_no, msg, exc,
+        }) catch continue;
+        try json.appendSlice(self.allocator, entry);
+    }
+
+    var count_buf: [64]u8 = undefined;
+    const count_str = std.fmt.bufPrint(&count_buf, "],\"count\":{d}}}", .{findings.len}) catch "]}";
+    try json.appendSlice(self.allocator, count_str);
+    return self.respondWithCors(request, .ok, "application/json", json.items);
+}
+
+// POST /api/security/scan-pkgbuild - scan a source's checkout, persist findings
+fn apiSecurityScanPkgbuild(self: *HttpServer, request: *std.http.Server.Request, io: std.Io) !void {
+    const db = self.database orelse return self.jsonErrorWithCors(request, .internal_server_error, "no database");
+    const config = self.config orelse return self.jsonErrorWithCors(request, .internal_server_error, "no config");
+
+    if (!requireJsonContentType(request)) {
+        return self.jsonErrorWithCors(request, .unsupported_media_type, "Content-Type must be application/json");
+    }
+    const body = try self.readRequestBody(request);
+    defer if (body.len > 0) self.allocator.free(body);
+    if (body.len == 0) return self.jsonErrorWithCors(request, .bad_request, "missing request body");
+
+    const ScanReq = struct { source: []const u8 };
+    const parsed = std.json.parseFromSlice(ScanReq, self.allocator, body, .{}) catch {
+        return self.jsonErrorWithCors(request, .bad_request, "invalid JSON");
+    };
+    defer parsed.deinit();
+
+    const source_name = try self.allocator.dupe(u8, parsed.value.source);
+    defer self.allocator.free(source_name);
+    SourceManager.validateSourceName(source_name) catch {
+        return self.jsonErrorWithCors(request, .bad_request, "invalid source name");
+    };
+
+    const checkout_dir = try config.sourceCheckoutDir(self.allocator, source_name);
+    defer self.allocator.free(checkout_dir);
+
+    const findings = Scanner.scanSourceTree(self.allocator, io, checkout_dir) catch {
+        return self.jsonErrorWithCors(request, .internal_server_error, "scan failed");
+    };
+    defer {
+        for (findings) |f| f.deinit(self.allocator);
+        self.allocator.free(findings);
+    }
+
+    db.clearScanFindings(source_name) catch {};
+    for (findings) |f| {
+        db.addScanFinding(source_name, f.rule_id, f.severity.asString(), f.file_name, f.line_no, f.excerpt, f.message) catch {};
+    }
+
+    var buf: [128]u8 = undefined;
+    const json = std.fmt.bufPrint(&buf, "{{\"success\":true,\"findings\":{d},\"blocked\":{}}}", .{ findings.len, Scanner.shouldBlock(findings) }) catch "{\"success\":true}";
+    return self.respondWithCors(request, .ok, "application/json", json);
+}
+
+// GET /api/security/keys - list trusted GPG fingerprints
+fn apiSecurityListKeys(self: *HttpServer, request: *std.http.Server.Request, _: std.Io) !void {
+    const db = self.database orelse return self.jsonErrorWithCors(request, .internal_server_error, "no database");
+
+    const keys = try db.getTrustedKeys(self.allocator);
+    defer {
+        for (keys) |k| k.deinit(self.allocator);
+        self.allocator.free(keys);
+    }
+
+    var json: std.ArrayList(u8) = .empty;
+    defer json.deinit(self.allocator);
+    try json.appendSlice(self.allocator, "{\"keys\":[");
+    for (keys, 0..) |k, i| {
+        if (i > 0) try json.appendSlice(self.allocator, ",");
+        const fpr = try jsonEscape(self.allocator, k.fingerprint);
+        defer self.allocator.free(fpr);
+        const note = try jsonEscape(self.allocator, k.note);
+        defer self.allocator.free(note);
+        var buf: [512]u8 = undefined;
+        const entry = std.fmt.bufPrint(&buf, "{{\"fingerprint\":\"{s}\",\"note\":\"{s}\"}}", .{ fpr, note }) catch continue;
+        try json.appendSlice(self.allocator, entry);
+    }
+    var count_buf: [64]u8 = undefined;
+    const count_str = std.fmt.bufPrint(&count_buf, "],\"count\":{d}}}", .{keys.len}) catch "]}";
+    try json.appendSlice(self.allocator, count_str);
+    return self.respondWithCors(request, .ok, "application/json", json.items);
+}
+
+// POST /api/security/keys - add a trusted fingerprint
+fn apiSecurityAddKey(self: *HttpServer, request: *std.http.Server.Request, _: std.Io) !void {
+    const db = self.database orelse return self.jsonErrorWithCors(request, .internal_server_error, "no database");
+    if (!requireJsonContentType(request)) {
+        return self.jsonErrorWithCors(request, .unsupported_media_type, "Content-Type must be application/json");
+    }
+    const body = try self.readRequestBody(request);
+    defer if (body.len > 0) self.allocator.free(body);
+    if (body.len == 0) return self.jsonErrorWithCors(request, .bad_request, "missing request body");
+
+    const KeyReq = struct { fingerprint: []const u8, note: []const u8 = "" };
+    const parsed = std.json.parseFromSlice(KeyReq, self.allocator, body, .{}) catch {
+        return self.jsonErrorWithCors(request, .bad_request, "invalid JSON");
+    };
+    defer parsed.deinit();
+
+    db.addTrustedKey(parsed.value.fingerprint, "", parsed.value.note) catch {
+        return self.jsonErrorWithCors(request, .internal_server_error, "failed to add key");
+    };
+    return self.respondWithCors(request, .ok, "application/json", "{\"success\":true}");
+}
+
+// DELETE /api/security/keys - remove a trusted fingerprint
+fn apiSecurityRemoveKey(self: *HttpServer, request: *std.http.Server.Request, _: std.Io) !void {
+    const db = self.database orelse return self.jsonErrorWithCors(request, .internal_server_error, "no database");
+    if (!requireJsonContentType(request)) {
+        return self.jsonErrorWithCors(request, .unsupported_media_type, "Content-Type must be application/json");
+    }
+    const body = try self.readRequestBody(request);
+    defer if (body.len > 0) self.allocator.free(body);
+    if (body.len == 0) return self.jsonErrorWithCors(request, .bad_request, "missing request body");
+
+    const KeyReq = struct { fingerprint: []const u8 };
+    const parsed = std.json.parseFromSlice(KeyReq, self.allocator, body, .{}) catch {
+        return self.jsonErrorWithCors(request, .bad_request, "invalid JSON");
+    };
+    defer parsed.deinit();
+
+    db.removeTrustedKey(parsed.value.fingerprint) catch {
+        return self.jsonErrorWithCors(request, .internal_server_error, "failed to remove key");
+    };
+    return self.respondWithCors(request, .ok, "application/json", "{\"success\":true}");
+}
+
+// POST /api/security/pin - pin a source to a ref/commit
+fn apiSecurityPin(self: *HttpServer, request: *std.http.Server.Request, io: std.Io) !void {
+    const db = self.database orelse return self.jsonErrorWithCors(request, .internal_server_error, "no database");
+    const config = self.config orelse return self.jsonErrorWithCors(request, .internal_server_error, "no config");
+    if (!requireJsonContentType(request)) {
+        return self.jsonErrorWithCors(request, .unsupported_media_type, "Content-Type must be application/json");
+    }
+    const body = try self.readRequestBody(request);
+    defer if (body.len > 0) self.allocator.free(body);
+    if (body.len == 0) return self.jsonErrorWithCors(request, .bad_request, "missing request body");
+
+    const PinReq = struct { source: []const u8, ref: []const u8 = "" };
+    const parsed = std.json.parseFromSlice(PinReq, self.allocator, body, .{}) catch {
+        return self.jsonErrorWithCors(request, .bad_request, "invalid JSON");
+    };
+    defer parsed.deinit();
+
+    const source_name = try self.allocator.dupe(u8, parsed.value.source);
+    defer self.allocator.free(source_name);
+    SourceManager.validateSourceName(source_name) catch {
+        return self.jsonErrorWithCors(request, .bad_request, "invalid source name");
+    };
+
+    const checkout_dir = try config.sourceCheckoutDir(self.allocator, source_name);
+    defer self.allocator.free(checkout_dir);
+
+    if (parsed.value.ref.len > 0) {
+        Integrity.checkoutRef(self.allocator, io, checkout_dir, parsed.value.ref) catch {
+            return self.jsonErrorWithCors(request, .internal_server_error, "failed to checkout ref");
+        };
+    }
+    const commit = Integrity.resolveGitHead(self.allocator, io, checkout_dir) catch {
+        return self.jsonErrorWithCors(request, .internal_server_error, "failed to resolve commit");
+    };
+    defer self.allocator.free(commit);
+    const pin_ref = if (parsed.value.ref.len > 0) parsed.value.ref else commit;
+    db.setSourcePin(source_name, null, pin_ref, commit, null) catch {
+        return self.jsonErrorWithCors(request, .internal_server_error, "failed to persist pin");
+    };
+    return self.respondWithCors(request, .ok, "application/json", "{\"success\":true}");
 }
 
 // Response helpers
