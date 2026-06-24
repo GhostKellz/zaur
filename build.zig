@@ -23,15 +23,16 @@ pub fn build(b: *std.Build) void {
     // in this directory.
 
     // Get dependencies
-    const zsync = b.dependency("zsync", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     const zqlite = b.dependency("zqlite", .{
         .target = target,
         .optimize = optimize,
     });
+
+    // Expose the package version (single source of truth: build.zig.zon)
+    // to source files via `@import("build_options")`.
+    const build_options = b.addOptions();
+    build_options.addOption([]const u8, "version", @import("build.zig.zon").version);
+    const build_options_mod = build_options.createModule();
 
     // This creates a module, which represents a collection of source files alongside
     // some compilation options, such as optimization mode and linked system libraries.
@@ -52,8 +53,8 @@ pub fn build(b: *std.Build) void {
         // which requires us to specify a target.
         .target = target,
         .imports = &.{
-            .{ .name = "zsync", .module = zsync.module("zsync") },
             .{ .name = "zqlite", .module = zqlite.module("zqlite") },
+            .{ .name = "build_options", .module = build_options_mod },
         },
     });
 

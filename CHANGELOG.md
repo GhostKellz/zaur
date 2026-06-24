@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.5 (2026-06-24)
+
+### Changed
+- Bumped `zqlite` to v1.7.0 and minimum Zig to 0.17.0-dev.956+2dca73595.
+- Removed the unused `zsync` dependency, trimming supply-chain surface.
+- `/api/health` now reports the package version from `build.zig.zon`
+  (single source of truth) instead of a hardcoded string.
+
+### Documentation
+- Restructured `docs/` into a single index plus getting-started, guides,
+  security, api, and internals sections with Mermaid diagrams.
+- Corrected install instructions (git-clone only; not on the AUR) and the
+  required Zig dev version.
+
 ## 0.1.4 (2026-06-10)
 
 ### Added — Supply-Chain Security Hardening

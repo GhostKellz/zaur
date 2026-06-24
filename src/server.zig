@@ -517,7 +517,8 @@ fn handleIndex(_: *HttpServer, request: *std.http.Server.Request, _: std.Io) !vo
 }
 
 fn apiHealth(self: *HttpServer, request: *std.http.Server.Request, _: std.Io) !void {
-    return self.respondWithCors(request, .ok, "application/json", "{\"status\":\"ok\",\"version\":\"0.1.2\"}");
+    const body = "{\"status\":\"ok\",\"version\":\"" ++ @import("build_options").version ++ "\"}";
+    return self.respondWithCors(request, .ok, "application/json", body);
 }
 
 fn apiGetStatus(self: *HttpServer, request: *std.http.Server.Request, _: std.Io) !void {

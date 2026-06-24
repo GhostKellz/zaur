@@ -39,7 +39,7 @@ ZAUR is a self-hosted AUR package builder and repository server built in Zig. It
 
 ### Prerequisites
 
-- Zig 0.16.0-dev or later
+- Zig matching `minimum_zig_version` in [build.zig.zon](build.zig.zon) (a 0.17.0-dev build)
 - Arch Linux
 - `makepkg` and `repo-add` (from pacman)
 
@@ -171,12 +171,21 @@ cd docker
 
 ## Documentation
 
-- [Installation](docs/installation.md)
-- [Configuration](docs/configuration.md)
-- [Deployment](docs/deployment.md)
-- [Mirror Setup](docs/mirror.md)
+Full documentation lives in [`docs/`](docs/README.md).
+
+- [Documentation Index](docs/README.md) - Full docs map and Mermaid diagrams
+- [Installation](docs/getting-started/installation.md) - Build from source and run as a service
+- [Quickstart](docs/getting-started/quickstart.md) - Init, add, build, publish, serve
+- [Configuration](docs/guides/configuration.md) - Environment variables and directories
+- [Sources](docs/guides/sources.md) - AUR, GitHub, local, and generated PKGBUILDs
+- [Repositories](docs/guides/repositories.md) - Publishing and client configuration
+- [Mirror](docs/guides/mirror.md) - Caching official Arch repositories
+- [Deployment](docs/guides/deployment.md) - Docker and nginx
+- [Supply-Chain Hardening](docs/security/supply-chain.md) - Build security gates
+- [HTTP API](docs/api/http-api.md) - Endpoints and authentication
+- [Architecture](docs/internals/architecture.md) - Module graph and flows
 - [Changelog](CHANGELOG.md)
-- [Security](SECURITY.md)
+- [Security Policy](SECURITY.md)
 
 ---
 
